@@ -10,7 +10,7 @@ Endpoints:
   GET  /docs         → documentazione interattiva (Swagger UI)
 """
 
-import os, sys, json, math, shutil, zipfile, io, time, uuid
+import os, sys, json, math, shutil, zipfile, io, time, uuid, struct
 from pathlib import Path
 from typing import Optional
 
@@ -1843,6 +1843,122 @@ WORK_DIR = Path("/tmp/ls")
 WORK_DIR.mkdir(exist_ok=True)
 
 # ─────────────────────────────────────────────
+# PARSER FILE PLY (da Scaniverse/ARCore)
+# ─────────────────────────────────────────────
+
+def parse_ply(data: bytes) -> np.ndarray:
+    """
+    Legge un file .ply binario o ASCII e restituisce array Nx3 (x,y,z).
+    Compatibile con export di Scaniverse, Polycam, ARCore.
+    """
+    try:
+        # Prova a decodificare come testo (PLY ASCII)
+        text = data.decode('utf-8', errors='ignore')
+        lines = text.split('\n')
+        
+        # Leggi header
+        n_vertices = 0
+        is_binary_little = False
+        is_binary_big = False
+        header_end = 0
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line.startswith('element vertex'):
+                n_vertices = int(line.split()[-1])
+            elif line == 'format binary_little_endian 1.0':
+                is_binary_little = True
+            elif line == 'format binary_big_endian 1.0':
+                is_binary_big = True
+            elif line == 'end_header':
+                header_end = i + 1
+                break
+        
+        if n_vertices == 0:
+            raise ValueError("Nessun vertice trovato nel file PLY")
+        
+        if is_binary_little or is_binary_big:
+            # PLY binario
+            header_bytes = '\n'.join(lines[:header_end]) + '\n'
+            header_len = len(header_bytes.encode('utf-8'))
+            vertex_data = data[header_len:]
+            
+            # Assume formato float32 x,y,z (12 bytes per vertice)
+            # Scaniverse usa questo formato standard
+            stride = 12  # 3 float32
+            points = []
+            endian = '<' if is_binary_little else '>'
+            
+            for i in range(min(n_vertices, len(vertex_data) // stride)):
+                offset = i * stride
+                if offset + 12 <= len(vertex_data):
+                    x, y, z = struct.unpack(endian + 'fff', vertex_data[offset:offset+12])
+                    if not (math.isnan(x) or math.isnan(y) or math.isnan(z)):
+                        points.append([x, y, z])
+            
+            if not points:
+                raise ValueError("Nessun punto valido nel PLY binario")
+            return np.array(points, dtype=np.float32)
+        
+        else:
+            # PLY ASCII
+            points = []
+            for line in lines[header_end:]:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 3:
+                    try:
+                        x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+                        if not (math.isnan(x) or math.isnan(y) or math.isnan(z)):
+                            points.append([x, y, z])
+                    except ValueError:
+                        continue
+                if len(points) >= n_vertices:
+                    break
+            
+            if not points:
+                raise ValueError("Nessun punto valido nel PLY ASCII")
+            return np.array(points, dtype=np.float32)
+    
+    except Exception as e:
+        raise ValueError(f"Errore parsing PLY: {str(e)}")
+
+
+def stima_dimensioni_stanza(points: np.ndarray) -> dict:
+    """
+    Stima automatica delle dimensioni della stanza dal point cloud.
+    Restituisce configurazione stanza per la pipeline.
+    """
+    # Normalizza coordinate
+    pts = points - points.min(axis=0)
+    
+    # Dimensioni bounding box
+    W = float(pts[:,0].max())
+    L = float(pts[:,1].max())  
+    H = float(pts[:,2].max())
+    
+    # Filtra dimensioni irrealistiche
+    # Una stanza tipica: 2-10m x 2-10m x 2-4m
+    W = max(2.0, min(W, 12.0))
+    L = max(2.0, min(L, 12.0))
+    H = max(2.0, min(H, 4.0))
+    
+    return {
+        "larghezza": round(W, 2),
+        "profondita": round(L, 2),
+        "altezza": round(H, 2),
+        "difetti": {},
+        "impianti": [],
+        "porta": {"parete":"est","offset_sx":0.6,"larghezza":0.9,"altezza":2.10},
+        "finestra": {"parete":"nord","offset_sx":0.9,"larghezza":1.2,
+                     "altezza_base":0.9,"altezza_top":2.10},
+    }
+
+
+
+# ─────────────────────────────────────────────
 # MODELLI DATI
 # ─────────────────────────────────────────────
 
@@ -2250,6 +2366,72 @@ def demo():
                  "X-Tempo-Elaborazione": str(elapsed),
                  "X-Anomalie": str(len(risultato["anomalie"]))}
     )
+
+
+
+@app.post("/analizza-ply")
+async def analizza_ply(
+    file: UploadFile = File(..., description="File .ply da Scaniverse/ARCore"),
+    larghezza: float = 0,
+    lunghezza: float = 0,
+    altezza: float = 0,
+):
+    """
+    Riceve un file .ply da Scaniverse e genera DXF + PDF + ZIP completo.
+    Le dimensioni sono opzionali — se non fornite vengono stimate dal point cloud.
+    """
+    job_id  = str(uuid.uuid4())[:8]
+    job_dir = WORK_DIR / job_id
+    job_dir.mkdir()
+
+    t0 = time.time()
+
+    try:
+        # Leggi e parsifica il file PLY
+        ply_data = await file.read()
+        
+        if len(ply_data) < 100:
+            raise HTTPException(400, "File PLY troppo piccolo o vuoto")
+        
+        # Parsifica il point cloud
+        points = parse_ply(ply_data)
+        
+        if len(points) < 100:
+            raise HTTPException(400, f"Troppo pochi punti: {len(points)}. Rifare la scansione.")
+        
+        # Normalizza coordinate (porta a valori positivi)
+        points = points - points.min(axis=0)
+        
+        # Stima o usa dimensioni fornite
+        stanza_cfg = stima_dimensioni_stanza(points)
+        if larghezza > 0: stanza_cfg["larghezza"]  = larghezza
+        if lunghezza > 0: stanza_cfg["profondita"] = lunghezza
+        if altezza  > 0: stanza_cfg["altezza"]     = altezza
+        
+        # Esegui pipeline completa
+        risultato = esegui_pipeline(job_dir, points, stanza_cfg)
+        elapsed   = round(time.time()-t0, 2)
+
+        zip_path = job_dir/"layoutsync_output.zip"
+        return FileResponse(
+            path=str(zip_path),
+            media_type="application/zip",
+            filename=f"layoutsync_{job_id}.zip",
+            headers={
+                "X-Job-Id":              job_id,
+                "X-Tempo-Elaborazione":  str(elapsed),
+                "X-N-Punti":             str(len(points)),
+                "X-Larghezza-Rilevata":  str(stanza_cfg["larghezza"]),
+                "X-Lunghezza-Rilevata":  str(stanza_cfg["profondita"]),
+                "X-Altezza-Rilevata":    str(stanza_cfg["altezza"]),
+                "X-Anomalie":            str(len(risultato.get("anomalie", []))),
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Errore elaborazione PLY: {str(e)}")
 
 @app.post("/analizza")
 async def analizza(

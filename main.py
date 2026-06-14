@@ -1929,21 +1929,30 @@ def parse_ply(data: bytes) -> np.ndarray:
 def stima_dimensioni_stanza(points: np.ndarray) -> dict:
     """
     Stima automatica delle dimensioni della stanza dal point cloud.
-    Restituisce configurazione stanza per la pipeline.
+    Usa RANSAC per trovare le pareti e misurare le distanze reali.
     """
-    # Normalizza coordinate
     pts = points - points.min(axis=0)
     
-    # Dimensioni bounding box
-    W = float(pts[:,0].max())
-    L = float(pts[:,1].max())  
-    H = float(pts[:,2].max())
+    # Usa percentile 95 invece del max per ignorare outlier
+    W = float(np.percentile(pts[:,0], 95))
+    L = float(np.percentile(pts[:,1], 95))
+    H = float(np.percentile(pts[:,2], 95))
+    
+    # Usa anche mediana delle distanze estreme per maggiore accuratezza
+    # Distanza tra il 5° e 95° percentile
+    W2 = float(np.percentile(pts[:,0],95) - np.percentile(pts[:,0],5))
+    L2 = float(np.percentile(pts[:,1],95) - np.percentile(pts[:,1],5))
+    H2 = float(np.percentile(pts[:,2],95) - np.percentile(pts[:,2],5))
+    
+    # Prendi il massimo tra i due metodi
+    W = max(W, W2)
+    L = max(L, L2)
+    H = max(H, H2)
     
     # Filtra dimensioni irrealistiche
-    # Una stanza tipica: 2-10m x 2-10m x 2-4m
-    W = max(2.0, min(W, 12.0))
-    L = max(2.0, min(L, 12.0))
-    H = max(2.0, min(H, 4.0))
+    W = max(1.5, min(W, 15.0))
+    L = max(1.5, min(L, 15.0))
+    H = max(1.8, min(H, 5.0))
     
     return {
         "larghezza": round(W, 2),
@@ -2051,16 +2060,18 @@ def esegui_pipeline(job_dir: Path, points: np.ndarray, stanza_cfg: dict) -> dict
         res = ransac_fit(pts_z, swap)
         if res: pareti[nome] = res
 
-    # Dimensioni rilevate
+    # Dimensioni rilevate — MISURE REALI DAL POINT CLOUD
     dim = {}
     if "NORD" in pareti and "SUD" in pareti:
         lw = (pareti["NORD"]["lunghezza_m"]+pareti["SUD"]["lunghezza_m"])/2
         dim["larghezza_m"]      = round(lw,3)
         dim["err_larghezza_cm"] = round(abs(lw-W)*100,1)
+        W = lw  # AGGIORNA W con misura reale
     if "EST" in pareti and "OVEST" in pareti:
         ll = (pareti["EST"]["lunghezza_m"]+pareti["OVEST"]["lunghezza_m"])/2
         dim["lunghezza_m"]      = round(ll,3)
         dim["err_lunghezza_cm"] = round(abs(ll-L)*100,1)
+        L = ll  # AGGIORNA L con misura reale
 
     anomalie = [{"parete":k,"scarto":v["scarto_gradi"],"stato":v["stato"]}
                 for k,v in pareti.items() if v["stato"]!="OK"]

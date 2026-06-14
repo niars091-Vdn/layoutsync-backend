@@ -1837,7 +1837,20 @@ def serve_app():
     return HTMLResponse(content=APP_HTML)
 
 app.add_middleware(CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "X-Job-Id",
+        "X-Tempo-Elaborazione",
+        "X-N-Punti",
+        "X-Larghezza-Rilevata",
+        "X-Lunghezza-Rilevata",
+        "X-Altezza-Rilevata",
+        "X-Anomalie",
+        "content-disposition",
+    ]
+)
 
 WORK_DIR = Path("/tmp/ls")
 WORK_DIR.mkdir(exist_ok=True)

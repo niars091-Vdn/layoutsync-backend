@@ -2324,8 +2324,8 @@ if __name__ == "__main__":
     print("=" * 55)
     print("  Server:  http://localhost:8000")
     print("  Docs:    http://localhost:8000/docs")
-    print("  Demo:    http://localhost:8000/demo
-  App:     http://localhost:8000/app")
+    print("  Demo:    http://localhost:8000/demo")
+    print("  App:     http://localhost:8000/app")
     print()
     print("  Endpoints:")
     print("    GET  /status   → health check")

@@ -1861,6 +1861,7 @@ function apri3D() {
       z: e.y/cvs.height*L3,
       parete: 'sud',
     })),
+    // ⬇️ ECCO IL DATO DINAMICO RICEVUTO DA PYTHON ⬇️
     elementi_dinamici: window._elementiReali || {}
   };
   go3D(data3D);

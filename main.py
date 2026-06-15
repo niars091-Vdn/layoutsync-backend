@@ -2660,7 +2660,7 @@ async def analizza_ply(
             stanza_cfg["angoli"] = geo["angoli"]
             stanza_cfg["contorno"] = geo["contorno"]
             stanza_cfg["fuori_squadro"] = geo["fuori_squadro"]
-          stanza_cfg["elementi_architettonici"] = geo["elementi_architettonici"]
+            stanza_cfg["elementi_architettonici"] = geo["elementi_architettonici"]
         
         # Esegui pipeline completa
         risultato = esegui_pipeline(job_dir, points, stanza_cfg)

@@ -1651,7 +1651,7 @@ function draw3D() {
   [[0,H,0,W,H,0],[W,H,0,W,H,L],[W,H,L,do_,H,L],[do_,H,L,0,H,0]]
   .forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#475569',1,[4,4]));
 
-// DIAGONALI SUL PAVIMENTO
+  // DIAGONALI SUL PAVIMENTO
   ln3(ctx,0,0.02,0, W,0.02,L,'#a855f7',2,[8,4]);
   ln3(ctx,W,0.02,0, do_,0.02,L,'#f97316',2,[8,4]);
   lb3(ctx,W/2,0.15,L/2,d.diagAC.toFixed(3)+'m','#a855f7',9);
@@ -1663,19 +1663,14 @@ function draw3D() {
       els.forEach(el => {
         let p_w = el.larghezza;
         let o = el.offset;
-        
-        // Assegna colori: Pilastri (grigio), Finestre (azzurro), Porte (arancione)
         let c = el.tipo === 'pilastro' ? '#94a3b8' : (el.tipo === 'finestra' ? '#85c1e9' : '#F39C12');
         let alpha = el.tipo === 'pilastro' ? 0.15 : 0.35;
-        
         let p1, p2, p3, p4;
         let h0 = 0, h1 = H;
         
-        // Regola l'altezza in base al tipo
         if (el.tipo === 'finestra') { h0 = 0.9; h1 = 2.1; }
         if (el.tipo === 'porta')    { h0 = 0.0; h1 = 2.1; }
 
-        // Posiziona sulla parete corretta (calcolo coordinate X, Z)
         if (parete === 'SUD') {
             p1 = [o, h0, L]; p2 = [o+p_w, h0, L]; p3 = [o+p_w, h1, L]; p4 = [o, h1, L];
         } else if (parete === 'NORD') {
@@ -1686,18 +1681,15 @@ function draw3D() {
             p1 = [0, h0, o]; p2 = [0, h0, o+p_w]; p3 = [0, h1, o+p_w]; p4 = [0, h1, o];
         }
 
-        // Disegna il rettangolo piatto sul muro
         pn3(ctx, [p1, p2, p3, p4], c, alpha);
         ln3(ctx, p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], c, 2);
         ln3(ctx, p2[0],p2[1],p2[2], p3[0],p3[1],p3[2], c, 2);
         ln3(ctx, p3[0],p3[1],p3[2], p4[0],p4[1],p4[2], c, 2);
         ln3(ctx, p4[0],p4[1],p4[2], p1[0],p1[1],p1[2], c, 2);
 
-        // Aggiungi la profondità se l'elemento è un pilastro (lo facciamo sporgere di 30cm)
         if (el.tipo === 'pilastro') {
             let pr = 0.30; 
             let p5, p6, p7, p8;
-            
             if (parete === 'SUD') {
                 p5 = [o, h0, L-pr]; p6 = [o+p_w, h0, L-pr]; p7 = [o+p_w, h1, L-pr]; p8 = [o, h1, L-pr];
             } else if (parete === 'NORD') {
@@ -1707,15 +1699,11 @@ function draw3D() {
             } else if (parete === 'OVEST') {
                 p5 = [pr, h0, o]; p6 = [pr, h0, o+p_w]; p7 = [pr, h1, o+p_w]; p8 = [pr, h1, o];
             }
-            
-            // Faccia anteriore della sporgenza
             pn3(ctx, [p5, p6, p7, p8], c, alpha);
             ln3(ctx, p5[0],p5[1],p5[2], p6[0],p6[1],p6[2], c, 1.5);
             ln3(ctx, p6[0],p6[1],p6[2], p7[0],p7[1],p7[2], c, 1.5);
             ln3(ctx, p7[0],p7[1],p7[2], p8[0],p8[1],p8[2], c, 1.5);
             ln3(ctx, p8[0],p8[1],p8[2], p5[0],p5[1],p5[2], c, 1.5);
-            
-            // Linee di collegamento tra il muro e la sporgenza
             ln3(ctx, p1[0],p1[1],p1[2], p5[0],p5[1],p5[2], c, 1.5);
             ln3(ctx, p2[0],p2[1],p2[2], p6[0],p6[1],p6[2], c, 1.5);
             ln3(ctx, p3[0],p3[1],p3[2], p7[0],p7[1],p7[2], c, 1.5);
@@ -1724,8 +1712,6 @@ function draw3D() {
       });
     });
   }
-
-  // IMPIANTI
 
   // IMPIANTI
   const IC={'scarico_acqua':'#3b82f6','presa_gas':'#f1c40f','presa_elettrica':'#ef4444'};
@@ -2530,6 +2516,7 @@ def esegui_pipeline(job_dir: Path, points: np.ndarray, stanza_cfg: dict) -> dict
         "dimensioni": dim,
         "pareti": pareti,
         "anomalie": anomalie,
+        "elementi_architettonici": stanza_cfg.get("elementi_architettonici", {}), # <--- RIGA AGGIUNTA
         "file": [f.name for f in job_dir.iterdir()
                  if f.suffix in [".jpg",".dxf",".zip"]],
     }
@@ -2673,6 +2660,7 @@ async def analizza_ply(
             stanza_cfg["angoli"] = geo["angoli"]
             stanza_cfg["contorno"] = geo["contorno"]
             stanza_cfg["fuori_squadro"] = geo["fuori_squadro"]
+          stanza_cfg["elementi_architettonici"] = geo["elementi_architettonici"]
         
         # Esegui pipeline completa
         risultato = esegui_pipeline(job_dir, points, stanza_cfg)

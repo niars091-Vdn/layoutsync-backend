@@ -1830,7 +1830,60 @@ function apri3D() {
 </body>
 </html>
 """
+def estrai_dettagli_parete(pts_2d, asse_linea, asse_prof, muro_val, is_max, max_len):
+    """
+    Analizza i punti 2D di una singola parete per trovare buchi (porte/finestre) e sporgenze (pilastri).
+    """
+    elementi = []
+    
+    # 1. Filtra solo i punti vicini a questa parete (entro 40cm)
+    if is_max:
+        mask = (pts_2d[:, asse_prof] > muro_val - 0.40) & (pts_2d[:, asse_prof] <= muro_val + 0.1)
+    else:
+        mask = (pts_2d[:, asse_prof] < muro_val + 0.40) & (pts_2d[:, asse_prof] >= muro_val - 0.1)
+        
+    p_parete = pts_2d[mask]
+    if len(p_parete) == 0: 
+        return elementi
 
+    distanza = np.abs(p_parete[:, asse_prof] - muro_val)
+    
+    # ── TROVA PILASTRI (Sporgenze) ──
+    # Punti distanti tra 10cm e 40cm dal muro principale
+    mask_pil = (distanza > 0.10) & (distanza < 0.40)
+    if np.sum(mask_pil) > 20:
+        coords = p_parete[mask_pil][:, asse_linea]
+        hist, edges = np.histogram(coords, bins=np.arange(0, max_len + 0.05, 0.05)) # Bin da 5cm
+        
+        in_el = False; start = 0
+        for i, c in enumerate(hist):
+            if c > 3 and not in_el:
+                in_el = True; start = i
+            elif c <= 3 and in_el:
+                in_el = False
+                w = (i - start) * 0.05
+                if 0.15 <= w <= 0.80:  # Larghezza tipica di un pilastro
+                    elementi.append({"tipo": "pilastro", "offset": round(edges[start], 2), "larghezza": round(w, 2)})
+                    
+    # ── TROVA PORTE/FINESTRE (Buchi) ──
+    # Guardiamo i punti esattamente sul muro (distanza < 10cm)
+    mask_muro = distanza <= 0.10
+    if np.sum(mask_muro) > 50:
+        coords = p_parete[mask_muro][:, asse_linea]
+        hist, edges = np.histogram(coords, bins=np.arange(0, max_len + 0.05, 0.05))
+        
+        in_buco = False; start = 0
+        for i, c in enumerate(hist):
+            if c <= 1 and not in_buco: # Quasi nessun punto = buco
+                in_buco = True; start = i
+            elif c > 1 and in_buco:
+                in_buco = False
+                w = (i - start) * 0.05
+                if 0.60 <= w <= 2.20:
+                    tipo = "porta" if w < 1.10 else "finestra"
+                    elementi.append({"tipo": tipo, "offset": round(edges[start], 2), "larghezza": round(w, 2)})
+                    
+    return elementi
 
 def analizza_geometria_reale(points: np.ndarray) -> dict:
     """
@@ -1860,6 +1913,19 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
     a0, a1 = plan_axes
     xmin = np.percentile(plan[:,0], 1); xmax = np.percentile(plan[:,0], 99)
     zmin = np.percentile(plan[:,1], 1); zmax = np.percentile(plan[:,1], 99)
+    
+    W = float(xmax - xmin)
+    L = float(zmax - zmin)
+
+    # -------- NUOVO CODICE DA INSERIRE --------
+    # Estraiamo pilastri e buchi per ogni parete
+    elementi_estratti = {
+        "NORD":  estrai_dettagli_parete(plan, 0, 1, zmax, True, W),
+        "SUD":   estrai_dettagli_parete(plan, 0, 1, zmin, False, W),
+        "EST":   estrai_dettagli_parete(plan, 1, 0, xmax, True, L),
+        "OVEST": estrai_dettagli_parete(plan, 1, 0, xmin, False, L)
+    }
+    # ------------------------------------------
 
     def fit_wall(axis_fixed, val_target, tol=0.35):
         sel = plan[np.abs(plan[:,axis_fixed]-val_target) < tol]
@@ -1929,6 +1995,7 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
         "fuori_squadro": fuori_squadro,
         "angoli": angoli,
         "contorno": contorno[:500],  # max 500 punti per leggerezza
+        "elementi_architettonici": elementi_estratti # <--- ECCO LA NUOVA RIGA
     }
 
 

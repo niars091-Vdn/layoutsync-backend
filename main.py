@@ -1651,34 +1651,81 @@ function draw3D() {
   [[0,H,0,W,H,0],[W,H,0,W,H,L],[W,H,L,do_,H,L],[do_,H,L,0,H,0]]
   .forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#475569',1,[4,4]));
 
-  // DIAGONALI SUL PAVIMENTO
+// DIAGONALI SUL PAVIMENTO
   ln3(ctx,0,0.02,0, W,0.02,L,'#a855f7',2,[8,4]);
   ln3(ctx,W,0.02,0, do_,0.02,L,'#f97316',2,[8,4]);
   lb3(ctx,W/2,0.15,L/2,d.diagAC.toFixed(3)+'m','#a855f7',9);
   lb3(ctx,(W+do_)/2,0.15,L/2,d.diagBD.toFixed(3)+'m','#f97316',9);
 
-  // FINESTRA
-  if(d.finestra) {
-    const f=d.finestra;
-    const fo=f.offset_sx||0.9, fl=f.larghezza||1.2;
-    const fh0=f.altezza_base||0.9, fh1=f.altezza_top||2.10;
-    pn3(ctx,[[fo,fh0,L],[fo+fl,fh0,L],[fo+fl,fh1,L],[fo,fh1,L]],'#85c1e9',0.35);
-    [[fo,fh0,L,fo+fl,fh0,L],[fo,fh1,L,fo+fl,fh1,L],
-     [fo,fh0,L,fo,fh1,L],[fo+fl,fh0,L,fo+fl,fh1,L],
-     [fo+fl/2,fh0,L,fo+fl/2,fh1,L]
-    ].forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#3b82f6',2));
-    lb3(ctx,fo+fl/2,(fh0+fh1)/2,L+0.05,'FIN.','#3b82f6',9);
+  // ── RENDER DINAMICO ELEMENTI (DA AI PYTHON) ──
+  if (d.elementi_dinamici) {
+    Object.entries(d.elementi_dinamici).forEach(([parete, els]) => {
+      els.forEach(el => {
+        let p_w = el.larghezza;
+        let o = el.offset;
+        
+        // Assegna colori: Pilastri (grigio), Finestre (azzurro), Porte (arancione)
+        let c = el.tipo === 'pilastro' ? '#94a3b8' : (el.tipo === 'finestra' ? '#85c1e9' : '#F39C12');
+        let alpha = el.tipo === 'pilastro' ? 0.15 : 0.35;
+        
+        let p1, p2, p3, p4;
+        let h0 = 0, h1 = H;
+        
+        // Regola l'altezza in base al tipo
+        if (el.tipo === 'finestra') { h0 = 0.9; h1 = 2.1; }
+        if (el.tipo === 'porta')    { h0 = 0.0; h1 = 2.1; }
+
+        // Posiziona sulla parete corretta (calcolo coordinate X, Z)
+        if (parete === 'SUD') {
+            p1 = [o, h0, L]; p2 = [o+p_w, h0, L]; p3 = [o+p_w, h1, L]; p4 = [o, h1, L];
+        } else if (parete === 'NORD') {
+            p1 = [o, h0, 0]; p2 = [o+p_w, h0, 0]; p3 = [o+p_w, h1, 0]; p4 = [o, h1, 0];
+        } else if (parete === 'EST') {
+            p1 = [W, h0, o]; p2 = [W, h0, o+p_w]; p3 = [W, h1, o+p_w]; p4 = [W, h1, o];
+        } else if (parete === 'OVEST') {
+            p1 = [0, h0, o]; p2 = [0, h0, o+p_w]; p3 = [0, h1, o+p_w]; p4 = [0, h1, o];
+        }
+
+        // Disegna il rettangolo piatto sul muro
+        pn3(ctx, [p1, p2, p3, p4], c, alpha);
+        ln3(ctx, p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], c, 2);
+        ln3(ctx, p2[0],p2[1],p2[2], p3[0],p3[1],p3[2], c, 2);
+        ln3(ctx, p3[0],p3[1],p3[2], p4[0],p4[1],p4[2], c, 2);
+        ln3(ctx, p4[0],p4[1],p4[2], p1[0],p1[1],p1[2], c, 2);
+
+        // Aggiungi la profondità se l'elemento è un pilastro (lo facciamo sporgere di 30cm)
+        if (el.tipo === 'pilastro') {
+            let pr = 0.30; 
+            let p5, p6, p7, p8;
+            
+            if (parete === 'SUD') {
+                p5 = [o, h0, L-pr]; p6 = [o+p_w, h0, L-pr]; p7 = [o+p_w, h1, L-pr]; p8 = [o, h1, L-pr];
+            } else if (parete === 'NORD') {
+                p5 = [o, h0, pr]; p6 = [o+p_w, h0, pr]; p7 = [o+p_w, h1, pr]; p8 = [o, h1, pr];
+            } else if (parete === 'EST') {
+                p5 = [W-pr, h0, o]; p6 = [W-pr, h0, o+p_w]; p7 = [W-pr, h1, o+p_w]; p8 = [W-pr, h1, o];
+            } else if (parete === 'OVEST') {
+                p5 = [pr, h0, o]; p6 = [pr, h0, o+p_w]; p7 = [pr, h1, o+p_w]; p8 = [pr, h1, o];
+            }
+            
+            // Faccia anteriore della sporgenza
+            pn3(ctx, [p5, p6, p7, p8], c, alpha);
+            ln3(ctx, p5[0],p5[1],p5[2], p6[0],p6[1],p6[2], c, 1.5);
+            ln3(ctx, p6[0],p6[1],p6[2], p7[0],p7[1],p7[2], c, 1.5);
+            ln3(ctx, p7[0],p7[1],p7[2], p8[0],p8[1],p8[2], c, 1.5);
+            ln3(ctx, p8[0],p8[1],p8[2], p5[0],p5[1],p5[2], c, 1.5);
+            
+            // Linee di collegamento tra il muro e la sporgenza
+            ln3(ctx, p1[0],p1[1],p1[2], p5[0],p5[1],p5[2], c, 1.5);
+            ln3(ctx, p2[0],p2[1],p2[2], p6[0],p6[1],p6[2], c, 1.5);
+            ln3(ctx, p3[0],p3[1],p3[2], p7[0],p7[1],p7[2], c, 1.5);
+            ln3(ctx, p4[0],p4[1],p4[2], p8[0],p8[1],p8[2], c, 1.5);
+        }
+      });
+    });
   }
 
-  // PORTA
-  if(d.porta) {
-    const p=d.porta;
-    const po=p.offset_sx||0.6, pl=p.larghezza||0.9, ph=p.altezza||2.10;
-    pn3(ctx,[[W,0,po],[W,0,po+pl],[W,ph,po+pl],[W,ph,po]],'#8B6914',0.5);
-    [[W,0,po,W,ph,po],[W,0,po+pl,W,ph,po+pl],[W,ph,po,W,ph,po+pl]]
-    .forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#F39C12',2));
-    lb3(ctx,W,ph/2,po+pl/2,'PORTA','#F39C12',9);
-  }
+  // IMPIANTI
 
   // IMPIANTI
   const IC={'scarico_acqua':'#3b82f6','presa_gas':'#f1c40f','presa_elettrica':'#ef4444'};

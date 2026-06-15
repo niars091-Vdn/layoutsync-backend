@@ -1941,41 +1941,58 @@ def parse_ply(data: bytes) -> np.ndarray:
 
 def stima_dimensioni_stanza(points: np.ndarray) -> dict:
     """
-    Stima automatica delle dimensioni della stanza dal point cloud.
-    Usa RANSAC per trovare le pareti e misurare le distanze reali.
+    Stima dimensioni stanza dal point cloud.
+    Identifica correttamente i 3 assi: i due orizzontali = pianta,
+    il verticale = altezza, indipendentemente dall'orientamento del file.
     """
     pts = points - points.min(axis=0)
-    
-    # Usa percentile 95 invece del max per ignorare outlier
-    W = float(np.percentile(pts[:,0], 95))
-    L = float(np.percentile(pts[:,1], 95))
-    H = float(np.percentile(pts[:,2], 95))
-    
-    # Usa anche mediana delle distanze estreme per maggiore accuratezza
-    # Distanza tra il 5° e 95° percentile
-    W2 = float(np.percentile(pts[:,0],95) - np.percentile(pts[:,0],5))
-    L2 = float(np.percentile(pts[:,1],95) - np.percentile(pts[:,1],5))
-    H2 = float(np.percentile(pts[:,2],95) - np.percentile(pts[:,2],5))
-    
-    # Prendi il massimo tra i due metodi
-    W = max(W, W2)
-    L = max(L, L2)
-    H = max(H, H2)
-    
-    # Filtra dimensioni irrealistiche
+
+    # Calcola l'estensione su ciascun asse (5°-95° percentile per robustezza)
+    ext = []
+    for axis in range(3):
+        lo = np.percentile(pts[:, axis], 3)
+        hi = np.percentile(pts[:, axis], 97)
+        ext.append(float(hi - lo))
+
+    # L'altezza è tipicamente l'asse con estensione 2.0-3.5m
+    # e spesso il più piccolo dei tre in una stanza normale.
+    # Identifica l'asse verticale: quello più vicino a 2.4-2.8m
+    # oppure il minore se nessuno e' in quel range
+    altezza_candidates = []
+    for i, e in enumerate(ext):
+        if 2.0 <= e <= 3.6:
+            altezza_candidates.append((abs(e - 2.7), i, e))
+
+    if altezza_candidates:
+        # Prendi quello piu' vicino a 2.7m come altezza
+        altezza_candidates.sort()
+        h_axis = altezza_candidates[0][1]
+        H = altezza_candidates[0][2]
+    else:
+        # Fallback: l'altezza e' l'asse minore
+        h_axis = int(np.argmin(ext))
+        H = ext[h_axis]
+
+    # Gli altri due assi sono la pianta
+    plan_axes = [i for i in range(3) if i != h_axis]
+    plan_dims = sorted([ext[plan_axes[0]], ext[plan_axes[1]]], reverse=True)
+    W = plan_dims[0]  # larghezza = lato maggiore
+    L = plan_dims[1]  # lunghezza = lato minore
+
+    # Filtra valori irrealistici
     W = max(1.5, min(W, 15.0))
     L = max(1.5, min(L, 15.0))
-    H = max(1.8, min(H, 5.0))
-    
+    H = max(1.8, min(H, 4.0))
+
     return {
         "larghezza": round(W, 2),
         "profondita": round(L, 2),
         "altezza": round(H, 2),
         "difetti": {},
         "impianti": [],
-        "porta": {"parete":"est","offset_sx":0.6,"larghezza":0.9,"altezza":2.10},
-        "finestra": {"parete":"nord","offset_sx":0.9,"larghezza":1.2,
-                     "altezza_base":0.9,"altezza_top":2.10},
+        "porta": {"parete": "est", "offset_sx": 0.6, "larghezza": 0.9, "altezza": 2.10},
+        "finestra": {"parete": "nord", "offset_sx": 0.9, "larghezza": 1.2,
+                     "altezza_base": 0.9, "altezza_top": 2.10},
     }
 
 

@@ -1395,6 +1395,8 @@ async function sendAll() {
     const anom=resp.headers.get('x-anomalie')||'0';
     const larg=resp.headers.get('x-larghezza-rilevata')||measures['w']||'--';
     const lung=resp.headers.get('x-lunghezza-rilevata')||measures['l']||'--';
+    const elementiRaw = resp.headers.get('x-elementi') || '{}';
+    window._elementiReali = JSON.parse(elementiRaw);
     steps.forEach(s=>document.getElementById(s).className='p-step done');
     await new Promise(r=>setTimeout(r,500));
     showResults(elapsed,anom,larg,lung);
@@ -1812,18 +1814,8 @@ function apri3D() {
       z: e.y/cvs.height*L3,
       parete: 'sud',
     })),
-    finestra: elements.some(e=>e.type==='window')?{
-      offset_sx:0.9, larghezza:parseFloat(measures['fin_w'])/100||1.2,
-      altezza_base:parseFloat(measures['fin_dav'])/100||0.9,
-      altezza_top: parseFloat(measures['fin_arc'])/100||2.10,
-    }:null,
-    porta: elements.some(e=>e.type==='door')?{
-      offset_sx:0.6,
-      larghezza:parseFloat(measures['door_w'])/100||0.9,
-      altezza:2.10,
-    }:null,
+    elementi_dinamici: window._elementiReali || {}
   };
-
   go3D(data3D);
 }
 </script>
@@ -2019,6 +2011,7 @@ app.add_middleware(CORSMiddleware,
         "X-Anomalie",
         "X-Fuori-Squadro",
         "X-Angoli",
+        "X-Elementi",           # <--- AGGIUNGI QUESTO
         "content-disposition",
     ]
 )
@@ -2652,6 +2645,7 @@ async def analizza_ply(
                 "X-Anomalie":            str(len(risultato.get("anomalie", []))),
                 "X-Fuori-Squadro":       json.dumps(stanza_cfg.get("fuori_squadro", {})),
                 "X-Angoli":              json.dumps(stanza_cfg.get("angoli", {})),
+                "X-Elementi":            json.dumps(risultato.get("elementi_architettonici", {})), # <--- AGGIUNGI QUESTO
             }
         )
 

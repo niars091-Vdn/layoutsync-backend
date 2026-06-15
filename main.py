@@ -1831,6 +1831,108 @@ function apri3D() {
 </html>
 """
 
+
+def analizza_geometria_reale(points: np.ndarray) -> dict:
+    """
+    Estrae contorno reale, fuori squadro per parete e angoli interni
+    dal point cloud. Identifica pilastri e aperture.
+    """
+    pts = points - points.min(axis=0)
+
+    # Identifica asse altezza
+    ext = []
+    for axis in range(3):
+        lo = np.percentile(pts[:, axis], 3)
+        hi = np.percentile(pts[:, axis], 97)
+        ext.append(float(hi - lo))
+    altezza_cand = [(abs(e-2.7), i) for i, e in enumerate(ext) if 2.0 <= e <= 3.6]
+    h_axis = altezza_cand[0][1] if altezza_cand else int(np.argmin(ext))
+    plan_axes = [i for i in range(3) if i != h_axis]
+    H = ext[h_axis]
+
+    # Punti pareti (fascia centrale in altezza)
+    y = pts[:, h_axis]
+    mask = (y > H*0.15) & (y < H*0.85)
+    plan = pts[mask][:, plan_axes]
+    if len(plan) < 50:
+        return None
+
+    a0, a1 = plan_axes
+    xmin = np.percentile(plan[:,0], 1); xmax = np.percentile(plan[:,0], 99)
+    zmin = np.percentile(plan[:,1], 1); zmax = np.percentile(plan[:,1], 99)
+
+    def fit_wall(axis_fixed, val_target, tol=0.35):
+        sel = plan[np.abs(plan[:,axis_fixed]-val_target) < tol]
+        if len(sel) < 20:
+            return None
+        var_ax = 1 - axis_fixed
+        x = sel[:, var_ax]; yv = sel[:, axis_fixed]
+        A = np.vstack([x, np.ones(len(x))]).T
+        try:
+            m, c = np.linalg.lstsq(A, yv, rcond=None)[0]
+        except Exception:
+            return None
+        dev = abs(np.degrees(np.arctan(m)))
+        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(sel))}
+
+    w_ovest = fit_wall(0, xmin)
+    w_est   = fit_wall(0, xmax)
+    w_nord  = fit_wall(1, zmin)
+    w_sud   = fit_wall(1, zmax)
+
+    fuori_squadro = {}
+    for nome, w in [("OVEST",w_ovest),("EST",w_est),("NORD",w_nord),("SUD",w_sud)]:
+        if w:
+            fuori_squadro[nome] = w["dev_gradi"]
+
+    def angolo(w1, w2):
+        if not w1 or not w2:
+            return 90.0
+        return round(90 + w1["dev_gradi"] - w2["dev_gradi"], 1)
+
+    angoli = {
+        "SW": angolo(w_ovest, w_nord),
+        "SE": angolo(w_est, w_nord),
+        "NE": angolo(w_est, w_sud),
+        "NW": angolo(w_ovest, w_sud),
+    }
+
+    # Estrai contorno reale come occupancy grid (per disegno)
+    res = 0.05
+    nx = max(1, int((xmax-xmin)/res)+1)
+    nz = max(1, int((zmax-zmin)/res)+1)
+    grid = np.zeros((nx, nz), dtype=int)
+    for p in plan:
+        ix = int((p[0]-xmin)/res); iz = int((p[1]-zmin)/res)
+        if 0 <= ix < nx and 0 <= iz < nz:
+            grid[ix, iz] += 1
+    occ = (grid >= 2)
+
+    # Contorno semplificato: lista celle di bordo
+    contorno = []
+    for ix in range(nx):
+        for iz in range(nz):
+            if occ[ix, iz]:
+                # Bordo se ha un vicino vuoto
+                vicini_vuoti = False
+                for dx, dz in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nix, niz = ix+dx, iz+dz
+                    if not (0<=nix<nx and 0<=niz<nz) or not occ[nix, niz]:
+                        vicini_vuoti = True; break
+                if vicini_vuoti:
+                    contorno.append([round(xmin+ix*res,3), round(zmin+iz*res,3)])
+
+    return {
+        "W": round(float(xmax-xmin), 2),
+        "L": round(float(zmax-zmin), 2),
+        "H": round(float(H), 2),
+        "fuori_squadro": fuori_squadro,
+        "angoli": angoli,
+        "contorno": contorno[:500],  # max 500 punti per leggerezza
+    }
+
+
+
 @app.get("/app", response_class=HTMLResponse)
 def serve_app():
     """Apri questa pagina dal browser del telefono."""
@@ -1848,6 +1950,8 @@ app.add_middleware(CORSMiddleware,
         "X-Lunghezza-Rilevata",
         "X-Altezza-Rilevata",
         "X-Anomalie",
+        "X-Fuori-Squadro",
+        "X-Angoli",
         "content-disposition",
     ]
 )
@@ -2448,6 +2552,19 @@ async def analizza_ply(
         if larghezza > 0: stanza_cfg["larghezza"]  = larghezza
         if lunghezza > 0: stanza_cfg["profondita"] = lunghezza
         if altezza  > 0: stanza_cfg["altezza"]     = altezza
+
+        # ANALISI GEOMETRIA REALE: contorno + fuori squadro + angoli
+        geo = analizza_geometria_reale(points)
+        if geo:
+            stanza_cfg["difetti"] = {
+                "parete_sud_scarto_gradi":   geo["fuori_squadro"].get("SUD", 0),
+                "parete_ovest_scarto_gradi": geo["fuori_squadro"].get("OVEST", 0),
+                "parete_nord_scarto_gradi":  geo["fuori_squadro"].get("NORD", 0),
+                "parete_est_scarto_gradi":   geo["fuori_squadro"].get("EST", 0),
+            }
+            stanza_cfg["angoli"] = geo["angoli"]
+            stanza_cfg["contorno"] = geo["contorno"]
+            stanza_cfg["fuori_squadro"] = geo["fuori_squadro"]
         
         # Esegui pipeline completa
         risultato = esegui_pipeline(job_dir, points, stanza_cfg)
@@ -2466,6 +2583,8 @@ async def analizza_ply(
                 "X-Lunghezza-Rilevata":  str(stanza_cfg["profondita"]),
                 "X-Altezza-Rilevata":    str(stanza_cfg["altezza"]),
                 "X-Anomalie":            str(len(risultato.get("anomalie", []))),
+                "X-Fuori-Squadro":       json.dumps(stanza_cfg.get("fuori_squadro", {})),
+                "X-Angoli":              json.dumps(stanza_cfg.get("angoli", {})),
             }
         )
 

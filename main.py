@@ -1861,66 +1861,65 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
     xmin = np.percentile(plan[:,0], 1); xmax = np.percentile(plan[:,0], 99)
     zmin = np.percentile(plan[:,1], 1); zmax = np.percentile(plan[:,1], 99)
 
-    def fit_wall(axis_fixed, val_target, tol=0.25):
-        # Seleziona punti vicini alla parete
-        sel = plan[np.abs(plan[:,axis_fixed]-val_target) < tol]
+    def fit_wall_vector(axis_fixed, val_target, tol=0.25):
+        """
+        Fitta una parete e restituisce il suo VETTORE direzione (non la pendenza).
+        Questo evita i problemi di assi invertiti tra pareti orizzontali/verticali.
+        """
+        sel = plan[np.abs(plan[:, axis_fixed] - val_target) < tol]
         if len(sel) < 20:
             return None
+        # Coordinate lungo la parete (asse variabile) e trasversali (asse fisso)
         var_ax = 1 - axis_fixed
-        x = sel[:, var_ax]; yv = sel[:, axis_fixed]
+        u = sel[:, var_ax]   # lungo la parete
+        v = sel[:, axis_fixed]  # trasversale (deviazione)
 
-        # FILTRO ROBUSTO: rimuovi outlier con MAD (Median Absolute Deviation)
-        med = np.median(yv)
-        mad = np.median(np.abs(yv - med))
+        # Filtro outlier robusto (MAD)
+        med = np.median(v)
+        mad = np.median(np.abs(v - med))
         if mad < 1e-6:
-            mad = np.std(yv) if np.std(yv) > 1e-6 else 0.01
-        # Tieni solo punti entro 3 MAD dalla mediana
-        inliers = np.abs(yv - med) < (3.0 * mad + 0.02)
-        x_in = x[inliers]; y_in = yv[inliers]
-        if len(x_in) < 15:
+            mad = np.std(v) if np.std(v) > 1e-6 else 0.01
+        inliers = np.abs(v - med) < (3.0 * mad + 0.02)
+        u_in = u[inliers]; v_in = v[inliers]
+        if len(u_in) < 15:
             return None
 
-        # Regressione robusta sui soli inlier
-        A = np.vstack([x_in, np.ones(len(x_in))]).T
+        # PCA: trova la direzione principale dei punti (la direzione della parete)
+        pts2 = np.column_stack([u_in, v_in])
+        pts2 = pts2 - pts2.mean(axis=0)
         try:
-            m, c = np.linalg.lstsq(A, y_in, rcond=None)[0]
+            cov = np.cov(pts2.T)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            # Autovettore con autovalore maggiore = direzione della parete
+            direction = eigvecs[:, np.argmax(eigvals)]
         except Exception:
             return None
 
-        dev = abs(np.degrees(np.arctan(m)))
-
-        # LIMITE FISICO: una parete reale non devia mai oltre ~8 gradi.
-        # Oltre, e' rumore o errore di fit -> scarta il risultato anomalo.
+        # Angolo della parete rispetto al suo asse ideale (u)
+        # direction[0] = componente lungo u, direction[1] = componente trasversale
+        dev = abs(np.degrees(np.arctan2(direction[1], abs(direction[0]))))
+        # Limite fisico
         if dev > 8.0:
-            # Riprova solo col 60% centrale dei punti (i piu' affidabili)
-            order = np.argsort(x_in)
-            n = len(order)
-            keep = order[int(n*0.2):int(n*0.8)]
-            if len(keep) >= 10:
-                A2 = np.vstack([x_in[keep], np.ones(len(keep))]).T
-                m2, c2 = np.linalg.lstsq(A2, y_in[keep], rcond=None)[0]
-                dev2 = abs(np.degrees(np.arctan(m2)))
-                dev = min(dev, dev2)
-            # Se ancora assurdo, cap a un valore plausibile
-            if dev > 8.0:
-                dev = round(min(dev, 8.0), 2)
+            dev = round(min(dev, 8.0), 2)
+        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(u_in))}
 
-        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(x_in))}
-
-    w_ovest = fit_wall(0, xmin)
-    w_est   = fit_wall(0, xmax)
-    w_nord  = fit_wall(1, zmin)
-    w_sud   = fit_wall(1, zmax)
+    w_ovest = fit_wall_vector(0, xmin)
+    w_est   = fit_wall_vector(0, xmax)
+    w_nord  = fit_wall_vector(1, zmin)
+    w_sud   = fit_wall_vector(1, zmax)
 
     fuori_squadro = {}
-    for nome, w in [("OVEST",w_ovest),("EST",w_est),("NORD",w_nord),("SUD",w_sud)]:
+    for nome, w in [("OVEST", w_ovest), ("EST", w_est), ("NORD", w_nord), ("SUD", w_sud)]:
         if w:
             fuori_squadro[nome] = w["dev_gradi"]
 
     def angolo(w1, w2):
         if not w1 or not w2:
             return 90.0
-        return round(90 + w1["dev_gradi"] - w2["dev_gradi"], 1)
+        # L'angolo tra due pareti adiacenti: 90 + somma algebrica delle deviazioni
+        # Limitato a un range fisico realistico
+        a = 90 + w1["dev_gradi"] - w2["dev_gradi"]
+        return round(max(82, min(98, a)), 1)
 
     angoli = {
         "SW": angolo(w_ovest, w_nord),

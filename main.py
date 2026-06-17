@@ -1395,8 +1395,6 @@ async function sendAll() {
     const anom=resp.headers.get('x-anomalie')||'0';
     const larg=resp.headers.get('x-larghezza-rilevata')||measures['w']||'--';
     const lung=resp.headers.get('x-lunghezza-rilevata')||measures['l']||'--';
-    const elementiRaw = resp.headers.get('x-elementi') || '{}';
-    window._elementiReali = JSON.parse(elementiRaw);
     steps.forEach(s=>document.getElementById(s).className='p-step done');
     await new Promise(r=>setTimeout(r,500));
     showResults(elapsed,anom,larg,lung);
@@ -1657,60 +1655,27 @@ function draw3D() {
   lb3(ctx,W/2,0.15,L/2,d.diagAC.toFixed(3)+'m','#a855f7',9);
   lb3(ctx,(W+do_)/2,0.15,L/2,d.diagBD.toFixed(3)+'m','#f97316',9);
 
-  // ── RENDER DINAMICO ELEMENTI (DA AI PYTHON) ──
-  if (d.elementi_dinamici) {
-    Object.entries(d.elementi_dinamici).forEach(([parete, els]) => {
-      els.forEach(el => {
-        let p_w = el.larghezza;
-        let o = el.offset;
-        let c = el.tipo === 'pilastro' ? '#94a3b8' : (el.tipo === 'finestra' ? '#85c1e9' : '#F39C12');
-        let alpha = el.tipo === 'pilastro' ? 0.15 : 0.35;
-        let p1, p2, p3, p4;
-        let h0 = 0, h1 = H;
-        
-        if (el.tipo === 'finestra') { h0 = 0.9; h1 = 2.1; }
-        if (el.tipo === 'porta')    { h0 = 0.0; h1 = 2.1; }
+  // FINESTRA
+  if(d.finestra) {
+    const f=d.finestra;
+    const fo=f.offset_sx||0.9, fl=f.larghezza||1.2;
+    const fh0=f.altezza_base||0.9, fh1=f.altezza_top||2.10;
+    pn3(ctx,[[fo,fh0,L],[fo+fl,fh0,L],[fo+fl,fh1,L],[fo,fh1,L]],'#85c1e9',0.35);
+    [[fo,fh0,L,fo+fl,fh0,L],[fo,fh1,L,fo+fl,fh1,L],
+     [fo,fh0,L,fo,fh1,L],[fo+fl,fh0,L,fo+fl,fh1,L],
+     [fo+fl/2,fh0,L,fo+fl/2,fh1,L]
+    ].forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#3b82f6',2));
+    lb3(ctx,fo+fl/2,(fh0+fh1)/2,L+0.05,'FIN.','#3b82f6',9);
+  }
 
-        if (parete === 'SUD') {
-            p1 = [o, h0, L]; p2 = [o+p_w, h0, L]; p3 = [o+p_w, h1, L]; p4 = [o, h1, L];
-        } else if (parete === 'NORD') {
-            p1 = [o, h0, 0]; p2 = [o+p_w, h0, 0]; p3 = [o+p_w, h1, 0]; p4 = [o, h1, 0];
-        } else if (parete === 'EST') {
-            p1 = [W, h0, o]; p2 = [W, h0, o+p_w]; p3 = [W, h1, o+p_w]; p4 = [W, h1, o];
-        } else if (parete === 'OVEST') {
-            p1 = [0, h0, o]; p2 = [0, h0, o+p_w]; p3 = [0, h1, o+p_w]; p4 = [0, h1, o];
-        }
-
-        pn3(ctx, [p1, p2, p3, p4], c, alpha);
-        ln3(ctx, p1[0],p1[1],p1[2], p2[0],p2[1],p2[2], c, 2);
-        ln3(ctx, p2[0],p2[1],p2[2], p3[0],p3[1],p3[2], c, 2);
-        ln3(ctx, p3[0],p3[1],p3[2], p4[0],p4[1],p4[2], c, 2);
-        ln3(ctx, p4[0],p4[1],p4[2], p1[0],p1[1],p1[2], c, 2);
-
-        if (el.tipo === 'pilastro') {
-            let pr = 0.30; 
-            let p5, p6, p7, p8;
-            if (parete === 'SUD') {
-                p5 = [o, h0, L-pr]; p6 = [o+p_w, h0, L-pr]; p7 = [o+p_w, h1, L-pr]; p8 = [o, h1, L-pr];
-            } else if (parete === 'NORD') {
-                p5 = [o, h0, pr]; p6 = [o+p_w, h0, pr]; p7 = [o+p_w, h1, pr]; p8 = [o, h1, pr];
-            } else if (parete === 'EST') {
-                p5 = [W-pr, h0, o]; p6 = [W-pr, h0, o+p_w]; p7 = [W-pr, h1, o+p_w]; p8 = [W-pr, h1, o];
-            } else if (parete === 'OVEST') {
-                p5 = [pr, h0, o]; p6 = [pr, h0, o+p_w]; p7 = [pr, h1, o+p_w]; p8 = [pr, h1, o];
-            }
-            pn3(ctx, [p5, p6, p7, p8], c, alpha);
-            ln3(ctx, p5[0],p5[1],p5[2], p6[0],p6[1],p6[2], c, 1.5);
-            ln3(ctx, p6[0],p6[1],p6[2], p7[0],p7[1],p7[2], c, 1.5);
-            ln3(ctx, p7[0],p7[1],p7[2], p8[0],p8[1],p8[2], c, 1.5);
-            ln3(ctx, p8[0],p8[1],p8[2], p5[0],p5[1],p5[2], c, 1.5);
-            ln3(ctx, p1[0],p1[1],p1[2], p5[0],p5[1],p5[2], c, 1.5);
-            ln3(ctx, p2[0],p2[1],p2[2], p6[0],p6[1],p6[2], c, 1.5);
-            ln3(ctx, p3[0],p3[1],p3[2], p7[0],p7[1],p7[2], c, 1.5);
-            ln3(ctx, p4[0],p4[1],p4[2], p8[0],p8[1],p8[2], c, 1.5);
-        }
-      });
-    });
+  // PORTA
+  if(d.porta) {
+    const p=d.porta;
+    const po=p.offset_sx||0.6, pl=p.larghezza||0.9, ph=p.altezza||2.10;
+    pn3(ctx,[[W,0,po],[W,0,po+pl],[W,ph,po+pl],[W,ph,po]],'#8B6914',0.5);
+    [[W,0,po,W,ph,po],[W,0,po+pl,W,ph,po+pl],[W,ph,po,W,ph,po+pl]]
+    .forEach(([x1,y1,z1,x2,y2,z2])=>ln3(ctx,x1,y1,z1,x2,y2,z2,'#F39C12',2));
+    lb3(ctx,W,ph/2,po+pl/2,'PORTA','#F39C12',9);
   }
 
   // IMPIANTI
@@ -1847,69 +1812,25 @@ function apri3D() {
       z: e.y/cvs.height*L3,
       parete: 'sud',
     })),
-    // ⬇️ ECCO IL DATO DINAMICO RICEVUTO DA PYTHON ⬇️
-    elementi_dinamici: window._elementiReali || {}
+    finestra: elements.some(e=>e.type==='window')?{
+      offset_sx:0.9, larghezza:parseFloat(measures['fin_w'])/100||1.2,
+      altezza_base:parseFloat(measures['fin_dav'])/100||0.9,
+      altezza_top: parseFloat(measures['fin_arc'])/100||2.10,
+    }:null,
+    porta: elements.some(e=>e.type==='door')?{
+      offset_sx:0.6,
+      larghezza:parseFloat(measures['door_w'])/100||0.9,
+      altezza:2.10,
+    }:null,
   };
+
   go3D(data3D);
 }
 </script>
 </body>
 </html>
 """
-def estrai_dettagli_parete(pts_2d, asse_linea, asse_prof, muro_val, is_max, max_len):
-    """
-    Analizza i punti 2D di una singola parete per trovare buchi (porte/finestre) e sporgenze (pilastri).
-    """
-    elementi = []
-    
-    # 1. Filtra solo i punti vicini a questa parete (entro 40cm)
-    if is_max:
-        mask = (pts_2d[:, asse_prof] > muro_val - 0.40) & (pts_2d[:, asse_prof] <= muro_val + 0.1)
-    else:
-        mask = (pts_2d[:, asse_prof] < muro_val + 0.40) & (pts_2d[:, asse_prof] >= muro_val - 0.1)
-        
-    p_parete = pts_2d[mask]
-    if len(p_parete) == 0: 
-        return elementi
 
-    distanza = np.abs(p_parete[:, asse_prof] - muro_val)
-    
-    # ── TROVA PILASTRI (Sporgenze) ──
-    # Punti distanti tra 10cm e 40cm dal muro principale
-    mask_pil = (distanza > 0.10) & (distanza < 0.40)
-    if np.sum(mask_pil) > 20:
-        coords = p_parete[mask_pil][:, asse_linea]
-        hist, edges = np.histogram(coords, bins=np.arange(0, max_len + 0.05, 0.05)) # Bin da 5cm
-        
-        in_el = False; start = 0
-        for i, c in enumerate(hist):
-            if c > 3 and not in_el:
-                in_el = True; start = i
-            elif c <= 3 and in_el:
-                in_el = False
-                w = (i - start) * 0.05
-                if 0.15 <= w <= 0.80:  # Larghezza tipica di un pilastro
-                    elementi.append({"tipo": "pilastro", "offset": round(edges[start], 2), "larghezza": round(w, 2)})
-                    
-    # ── TROVA PORTE/FINESTRE (Buchi) ──
-    # Guardiamo i punti esattamente sul muro (distanza < 10cm)
-    mask_muro = distanza <= 0.10
-    if np.sum(mask_muro) > 50:
-        coords = p_parete[mask_muro][:, asse_linea]
-        hist, edges = np.histogram(coords, bins=np.arange(0, max_len + 0.05, 0.05))
-        
-        in_buco = False; start = 0
-        for i, c in enumerate(hist):
-            if c <= 1 and not in_buco: # Quasi nessun punto = buco
-                in_buco = True; start = i
-            elif c > 1 and in_buco:
-                in_buco = False
-                w = (i - start) * 0.05
-                if 0.60 <= w <= 2.20:
-                    tipo = "porta" if w < 1.10 else "finestra"
-                    elementi.append({"tipo": tipo, "offset": round(edges[start], 2), "larghezza": round(w, 2)})
-                    
-    return elementi
 
 def analizza_geometria_reale(points: np.ndarray) -> dict:
     """
@@ -1939,33 +1860,52 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
     a0, a1 = plan_axes
     xmin = np.percentile(plan[:,0], 1); xmax = np.percentile(plan[:,0], 99)
     zmin = np.percentile(plan[:,1], 1); zmax = np.percentile(plan[:,1], 99)
-    
-    W = float(xmax - xmin)
-    L = float(zmax - zmin)
 
-    # -------- NUOVO CODICE DA INSERIRE --------
-    # Estraiamo pilastri e buchi per ogni parete
-    elementi_estratti = {
-        "NORD":  estrai_dettagli_parete(plan, 0, 1, zmax, True, W),
-        "SUD":   estrai_dettagli_parete(plan, 0, 1, zmin, False, W),
-        "EST":   estrai_dettagli_parete(plan, 1, 0, xmax, True, L),
-        "OVEST": estrai_dettagli_parete(plan, 1, 0, xmin, False, L)
-    }
-    # ------------------------------------------
-
-    def fit_wall(axis_fixed, val_target, tol=0.35):
+    def fit_wall(axis_fixed, val_target, tol=0.25):
+        # Seleziona punti vicini alla parete
         sel = plan[np.abs(plan[:,axis_fixed]-val_target) < tol]
         if len(sel) < 20:
             return None
         var_ax = 1 - axis_fixed
         x = sel[:, var_ax]; yv = sel[:, axis_fixed]
-        A = np.vstack([x, np.ones(len(x))]).T
+
+        # FILTRO ROBUSTO: rimuovi outlier con MAD (Median Absolute Deviation)
+        med = np.median(yv)
+        mad = np.median(np.abs(yv - med))
+        if mad < 1e-6:
+            mad = np.std(yv) if np.std(yv) > 1e-6 else 0.01
+        # Tieni solo punti entro 3 MAD dalla mediana
+        inliers = np.abs(yv - med) < (3.0 * mad + 0.02)
+        x_in = x[inliers]; y_in = yv[inliers]
+        if len(x_in) < 15:
+            return None
+
+        # Regressione robusta sui soli inlier
+        A = np.vstack([x_in, np.ones(len(x_in))]).T
         try:
-            m, c = np.linalg.lstsq(A, yv, rcond=None)[0]
+            m, c = np.linalg.lstsq(A, y_in, rcond=None)[0]
         except Exception:
             return None
+
         dev = abs(np.degrees(np.arctan(m)))
-        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(sel))}
+
+        # LIMITE FISICO: una parete reale non devia mai oltre ~8 gradi.
+        # Oltre, e' rumore o errore di fit -> scarta il risultato anomalo.
+        if dev > 8.0:
+            # Riprova solo col 60% centrale dei punti (i piu' affidabili)
+            order = np.argsort(x_in)
+            n = len(order)
+            keep = order[int(n*0.2):int(n*0.8)]
+            if len(keep) >= 10:
+                A2 = np.vstack([x_in[keep], np.ones(len(keep))]).T
+                m2, c2 = np.linalg.lstsq(A2, y_in[keep], rcond=None)[0]
+                dev2 = abs(np.degrees(np.arctan(m2)))
+                dev = min(dev, dev2)
+            # Se ancora assurdo, cap a un valore plausibile
+            if dev > 8.0:
+                dev = round(min(dev, 8.0), 2)
+
+        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(x_in))}
 
     w_ovest = fit_wall(0, xmin)
     w_est   = fit_wall(0, xmax)
@@ -2021,7 +1961,6 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
         "fuori_squadro": fuori_squadro,
         "angoli": angoli,
         "contorno": contorno[:500],  # max 500 punti per leggerezza
-        "elementi_architettonici": elementi_estratti # <--- ECCO LA NUOVA RIGA
     }
 
 
@@ -2045,7 +1984,6 @@ app.add_middleware(CORSMiddleware,
         "X-Anomalie",
         "X-Fuori-Squadro",
         "X-Angoli",
-        "X-Elementi",           # <--- AGGIUNGI QUESTO
         "content-disposition",
     ]
 )
@@ -2516,7 +2454,6 @@ def esegui_pipeline(job_dir: Path, points: np.ndarray, stanza_cfg: dict) -> dict
         "dimensioni": dim,
         "pareti": pareti,
         "anomalie": anomalie,
-        "elementi_architettonici": stanza_cfg.get("elementi_architettonici", {}), # <--- RIGA AGGIUNTA
         "file": [f.name for f in job_dir.iterdir()
                  if f.suffix in [".jpg",".dxf",".zip"]],
     }
@@ -2660,7 +2597,6 @@ async def analizza_ply(
             stanza_cfg["angoli"] = geo["angoli"]
             stanza_cfg["contorno"] = geo["contorno"]
             stanza_cfg["fuori_squadro"] = geo["fuori_squadro"]
-            stanza_cfg["elementi_architettonici"] = geo["elementi_architettonici"]
         
         # Esegui pipeline completa
         risultato = esegui_pipeline(job_dir, points, stanza_cfg)
@@ -2681,7 +2617,6 @@ async def analizza_ply(
                 "X-Anomalie":            str(len(risultato.get("anomalie", []))),
                 "X-Fuori-Squadro":       json.dumps(stanza_cfg.get("fuori_squadro", {})),
                 "X-Angoli":              json.dumps(stanza_cfg.get("angoli", {})),
-                "X-Elementi":            json.dumps(risultato.get("elementi_architettonici", {})), # <--- AGGIUNGI QUESTO
             }
         )
 

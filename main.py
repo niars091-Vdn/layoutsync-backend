@@ -1898,10 +1898,17 @@ def analizza_geometria_reale(points: np.ndarray) -> dict:
         # Angolo della parete rispetto al suo asse ideale (u)
         # direction[0] = componente lungo u, direction[1] = componente trasversale
         dev = abs(np.degrees(np.arctan2(direction[1], abs(direction[0]))))
-        # Limite fisico
-        if dev > 8.0:
-            dev = round(min(dev, 8.0), 2)
-        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(u_in))}
+        # Quanto bene i punti formano una linea retta (rapporto autovalori)
+        eig_sorted = np.sort(eigvals)[::-1]
+        linearita = 1 - (eig_sorted[1] / (eig_sorted[0] + 1e-9))  # 1 = linea perfetta
+        # Una parete vera e' molto lineare (>0.9). Se i punti sono sparsi (pilastro,
+        # rumore, aperture), la linearita cala e il fit non e' affidabile.
+        affidabile = linearita > 0.85
+        # Limite fisico: oltre 6 gradi su una parete e' raro; oltre 8 e' quasi sempre errore
+        if dev > 6.0 or not affidabile:
+            # Dato inaffidabile: ritorna deviazione nulla ma segnala bassa confidenza
+            return {"dev_gradi": 0.0, "n_punti": int(len(u_in)), "affidabile": False, "raw_dev": round(float(dev),2)}
+        return {"dev_gradi": round(float(dev), 2), "n_punti": int(len(u_in)), "affidabile": True}
 
     w_ovest = fit_wall_vector(0, xmin)
     w_est   = fit_wall_vector(0, xmax)

@@ -1832,6 +1832,170 @@ function apri3D() {
 """
 
 
+
+def estrai_poligono_stanza(points: np.ndarray) -> dict:
+    """
+    Estrae il contorno POLIGONALE reale della stanza dal point cloud.
+    Gestisce stanze di qualsiasi forma: rettangolari, a L, ottagonali,
+    con pareti diagonali, nicchie e rientranze.
+    Restituisce i vertici del poligono e le proprieta di ogni lato.
+    Algoritmo in puro numpy (nessuna dipendenza esterna).
+    """
+    from collections import deque
+
+    pts = points - points.min(axis=0)
+    ext = [np.percentile(pts[:, a], 97) - np.percentile(pts[:, a], 3) for a in range(3)]
+    # Asse altezza: 2.0-3.6m o il minore
+    h_axis = None
+    for i, e in enumerate(ext):
+        if 2.0 <= e <= 3.6:
+            h_axis = i; break
+    if h_axis is None:
+        h_axis = int(np.argmin(ext))
+    plan_ax = [i for i in range(3) if i != h_axis]
+    H = ext[h_axis]
+
+    y = pts[:, h_axis]
+    mask = (y > H * 0.2) & (y < H * 0.8)
+    plan = pts[mask][:, plan_ax]
+    if len(plan) < 100:
+        return None
+
+    res = 0.05
+    xmin, ymin = plan[:, 0].min(), plan[:, 1].min()
+    xmax, ymax = plan[:, 0].max(), plan[:, 1].max()
+    nx = int((xmax - xmin) / res) + 1
+    ny = int((ymax - ymin) / res) + 1
+    if nx < 5 or ny < 5 or nx > 800 or ny > 800:
+        return None
+
+    grid = np.zeros((nx, ny), dtype=bool)
+    for p in plan:
+        ix = int((p[0] - xmin) / res); iy = int((p[1] - ymin) / res)
+        if 0 <= ix < nx and 0 <= iy < ny:
+            grid[ix, iy] = True
+
+    def dil(gg, k):
+        o = gg.copy()
+        for dx in range(-k, k + 1):
+            for dy in range(-k, k + 1):
+                o |= np.roll(np.roll(gg, dx, 0), dy, 1)
+        return o
+    def ero(gg, k):
+        o = gg.copy()
+        for dx in range(-k, k + 1):
+            for dy in range(-k, k + 1):
+                o &= np.roll(np.roll(gg, dx, 0), dy, 1)
+        return o
+    g = ero(dil(grid, 3), 3)
+
+    Hh, W = g.shape
+    outside = np.zeros_like(g)
+    dq = deque()
+    for i in range(Hh):
+        for j in (0, W - 1):
+            if not g[i, j] and not outside[i, j]:
+                dq.append((i, j)); outside[i, j] = True
+    for j in range(W):
+        for i in (0, Hh - 1):
+            if not g[i, j] and not outside[i, j]:
+                dq.append((i, j)); outside[i, j] = True
+    while dq:
+        i, j = dq.popleft()
+        for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ni, nj = i + di, j + dj
+            if 0 <= ni < Hh and 0 <= nj < W and not g[ni, nj] and not outside[ni, nj]:
+                outside[ni, nj] = True; dq.append((ni, nj))
+    occ = ~outside
+
+    # Boundary tracing (Moore)
+    start = None
+    for i in range(Hh):
+        for j in range(W):
+            if occ[i, j]:
+                start = (i, j); break
+        if start:
+            break
+    if start is None:
+        return None
+    nb = [(-1,0),(-1,1),(0,1),(1,1),(1,0),(1,-1),(0,-1),(-1,-1)]
+    bnd = [start]; cur = start; b = 6; cnt = 0
+    while cnt < Hh * W * 2:
+        cnt += 1; found = False
+        for k in range(8):
+            d = (b + 1 + k) % 8
+            ni, nj = cur[0] + nb[d][0], cur[1] + nb[d][1]
+            if 0 <= ni < Hh and 0 <= nj < W and occ[ni, nj]:
+                b = (d + 4) % 8; cur = (ni, nj); bnd.append(cur); found = True; break
+        if not found:
+            break
+        if cur == start and len(bnd) > 2:
+            break
+    bnd = np.array(bnd, float)
+    bndm = np.column_stack([xmin + bnd[:, 0] * res, ymin + bnd[:, 1] * res])
+
+    # Semplificazione Douglas-Peucker iterativa
+    def rdp_iter(pp, eps):
+        pp = np.asarray(pp, float); n = len(pp)
+        if n < 3:
+            return pp
+        keep = np.zeros(n, bool); keep[0] = keep[-1] = True
+        stack = [(0, n - 1)]
+        while stack:
+            i0, i1 = stack.pop()
+            a, bb = pp[i0], pp[i1]; ab = bb - a; abn = np.hypot(ab[0], ab[1])
+            dmax = 0; idx = -1
+            for i in range(i0 + 1, i1):
+                if abn < 1e-9:
+                    dd = np.hypot(pp[i][0] - a[0], pp[i][1] - a[1])
+                else:
+                    dd = abs(ab[0]*(a[1]-pp[i][1]) - ab[1]*(a[0]-pp[i][0])) / abn
+                if dd > dmax:
+                    dmax = dd; idx = i
+            if dmax > eps and idx > 0:
+                keep[idx] = True
+                stack.append((i0, idx)); stack.append((idx, i1))
+        return pp[keep]
+
+    poly = rdp_iter(bndm, 0.12)
+    if len(poly) > 1 and np.hypot(*(poly[0] - poly[-1])) < 0.15:
+        poly = poly[:-1]
+
+    # Proprieta dei lati
+    lati = []
+    n = len(poly)
+    for i in range(n):
+        a = poly[i]; bb = poly[(i + 1) % n]
+        L = float(np.hypot(bb[0] - a[0], bb[1] - a[1]))
+        if L < 0.20:
+            continue
+        ang = float(np.degrees(np.arctan2(bb[1] - a[1], bb[0] - a[0])))
+        lati.append({
+            "da": [round(float(a[0]), 3), round(float(a[1]), 3)],
+            "a": [round(float(bb[0]), 3), round(float(bb[1]), 3)],
+            "lunghezza_m": round(L, 2),
+            "direzione_gradi": round(ang, 1),
+        })
+
+    # Angoli interni tra lati consecutivi
+    for i in range(len(lati)):
+        d0 = lati[i]["direzione_gradi"]
+        d1 = lati[(i + 1) % len(lati)]["direzione_gradi"]
+        interno = 180 - ((d1 - d0 + 180) % 360 - 180)
+        interno = abs(round(interno, 1))
+        if interno > 180:
+            interno = 360 - interno
+        lati[i]["angolo_fine"] = interno
+
+    return {
+        "vertici": [[round(float(v[0]), 3), round(float(v[1]), 3)] for v in poly],
+        "lati": lati,
+        "n_lati": len(lati),
+        "altezza_m": round(float(H), 2),
+        "bbox": [round(float(xmax - xmin), 2), round(float(ymax - ymin), 2)],
+    }
+
+
 def analizza_geometria_reale(points: np.ndarray) -> dict:
     """
     Estrae contorno reale, fuori squadro per parete e angoli interni
@@ -2174,6 +2338,15 @@ def esegui_pipeline(job_dir: Path, points: np.ndarray, stanza_cfg: dict) -> dict
     impianti = stanza_cfg.get("impianti", [])
     difetti  = stanza_cfg.get("difetti", {})
     SCALA = 100  # cm
+
+    # Salva il poligono reale come JSON (finira' nello ZIP per la PWA)
+    poligono = stanza_cfg.get("poligono")
+    if poligono:
+        try:
+            with open(job_dir / "poligono.json", "w") as pf:
+                json.dump(poligono, pf)
+        except Exception as e:
+            print(f"[poligono] salvataggio json fallito: {e}")
 
     # ── STEP 1: Pulizia e separazione layer ──
     def voxel(pts, sz=0.04):
@@ -2603,6 +2776,16 @@ async def analizza_ply(
             stanza_cfg["angoli"] = geo["angoli"]
             stanza_cfg["contorno"] = geo["contorno"]
             stanza_cfg["fuori_squadro"] = geo["fuori_squadro"]
+
+        # ESTRAZIONE POLIGONO REALE: forma a N lati (rettangolo, L, ottagono, diagonali, nicchie)
+        poligono = None
+        try:
+            poligono = estrai_poligono_stanza(points)
+        except Exception as e:
+            print(f"[poligono] estrazione fallita: {e}")
+        if poligono:
+            stanza_cfg["poligono"] = poligono
+            print(f"[poligono] estratti {poligono['n_lati']} lati")
         
         # Esegui pipeline completa
         risultato = esegui_pipeline(job_dir, points, stanza_cfg)

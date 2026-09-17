@@ -2637,6 +2637,120 @@ def esegui_pipeline(job_dir: Path, points: np.ndarray, stanza_cfg: dict) -> dict
                  if f.suffix in [".jpg",".dxf",".zip"]],
     }
 
+
+# ─────────────────────────────────────────────
+# IMPORT DXF (piante da CAD/architetto)
+# ─────────────────────────────────────────────
+
+def elenca_layer_dxf(path: str) -> list:
+    """Elenca i layer del DXF con conteggio entita, per la scelta manuale."""
+    doc = ezdxf.readfile(path)
+    msp = doc.modelspace()
+    conteggi = {}
+    for e in msp:
+        lay = e.dxf.layer
+        t = e.dxftype()
+        if lay not in conteggi:
+            conteggi[lay] = {"totale": 0, "linee": 0, "polilinee": 0}
+        conteggi[lay]["totale"] += 1
+        if t == "LINE":
+            conteggi[lay]["linee"] += 1
+        elif t in ("LWPOLYLINE", "POLYLINE"):
+            conteggi[lay]["polilinee"] += 1
+    layers = []
+    for lay, c in conteggi.items():
+        layers.append({
+            "nome": lay, "entita": c["totale"],
+            "linee": c["linee"], "polilinee": c["polilinee"],
+        })
+    layers.sort(key=lambda x: (x["polilinee"], x["linee"]), reverse=True)
+    return layers
+
+
+def _concatena_linee(linee, tol=0.05):
+    if not linee:
+        return None
+    usate = [False] * len(linee)
+    catena = list(linee[0]); usate[0] = True
+    cambiato = True
+    while cambiato:
+        cambiato = False
+        for i, (a, b) in enumerate(linee):
+            if usate[i]:
+                continue
+            fine = catena[-1]
+            if abs(fine[0]-a[0]) < tol and abs(fine[1]-a[1]) < tol:
+                catena.append(b); usate[i] = True; cambiato = True
+            elif abs(fine[0]-b[0]) < tol and abs(fine[1]-b[1]) < tol:
+                catena.append(a); usate[i] = True; cambiato = True
+    return catena
+
+
+def _costruisci_poligono_da_punti(pts, origine="dxf"):
+    pts = np.array(pts, dtype=float)
+    if len(pts) > 1 and np.hypot(*(pts[0]-pts[-1])) < 0.05:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return None
+    lati = []
+    n = len(pts)
+    for i in range(n):
+        a = pts[i]; b = pts[(i+1) % n]
+        L = float(np.hypot(b[0]-a[0], b[1]-a[1]))
+        if L < 0.05:
+            continue
+        ang = float(np.degrees(np.arctan2(b[1]-a[1], b[0]-a[0])))
+        lati.append({
+            "da": [round(float(a[0]), 3), round(float(a[1]), 3)],
+            "a": [round(float(b[0]), 3), round(float(b[1]), 3)],
+            "lunghezza_m": round(L, 2),
+            "direzione_gradi": round(ang, 1),
+        })
+    for i in range(len(lati)):
+        d0 = lati[i]["direzione_gradi"]; d1 = lati[(i+1) % len(lati)]["direzione_gradi"]
+        interno = 180 - ((d1 - d0 + 180) % 360 - 180)
+        interno = abs(round(interno, 1))
+        if interno > 180:
+            interno = 360 - interno
+        lati[i]["angolo_fine"] = interno
+    xs = pts[:, 0]; ys = pts[:, 1]
+    return {
+        "vertici": [[round(float(p[0]), 3), round(float(p[1]), 3)] for p in pts],
+        "lati": lati,
+        "n_lati": len(lati),
+        "altezza_m": 2.7,
+        "bbox": [round(float(xs.max()-xs.min()), 2), round(float(ys.max()-ys.min()), 2)],
+        "origine": origine,
+    }
+
+
+def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
+    """Estrae il poligono perimetro dal layer DXF scelto dall'utente."""
+    doc = ezdxf.readfile(path)
+    msp = doc.modelspace()
+    polilinee = []; linee = []
+    for e in msp:
+        if e.dxf.layer != layer_scelto:
+            continue
+        t = e.dxftype()
+        if t == "LWPOLYLINE":
+            pts = [(p[0], p[1]) for p in e.get_points()]
+            polilinee.append(pts)
+        elif t == "POLYLINE":
+            pts = [(v.dxf.location[0], v.dxf.location[1]) for v in e.vertices]
+            polilinee.append(pts)
+        elif t == "LINE":
+            linee.append(((e.dxf.start[0], e.dxf.start[1]), (e.dxf.end[0], e.dxf.end[1])))
+    if polilinee:
+        polilinee.sort(key=len, reverse=True)
+        return _costruisci_poligono_da_punti(polilinee[0])
+    if linee:
+        anello = _concatena_linee(linee)
+        if anello:
+            return _costruisci_poligono_da_punti(anello)
+    return None
+
+
 # ─────────────────────────────────────────────
 # ENDPOINTS
 # ─────────────────────────────────────────────
@@ -2814,6 +2928,75 @@ async def analizza_ply(
     except Exception as e:
         raise HTTPException(500, f"Errore elaborazione PLY: {str(e)}")
 
+@app.post("/dxf-layers")
+async def dxf_layers(file: UploadFile = File(..., description="File .dxf")):
+    """Riceve un DXF e restituisce l'elenco dei layer, per far scegliere all'utente
+    quale contiene le pareti."""
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = WORK_DIR / job_id
+    job_dir.mkdir()
+    try:
+        dxf_data = await file.read()
+        dxf_path = job_dir / "input.dxf"
+        with open(dxf_path, "wb") as f:
+            f.write(dxf_data)
+        layers = elenca_layer_dxf(str(dxf_path))
+        return JSONResponse({
+            "job_id": job_id,
+            "layers": layers,
+            "suggerito": layers[0]["nome"] if layers else None,
+        })
+    except Exception as e:
+        raise HTTPException(500, f"Errore lettura DXF: {str(e)}")
+
+
+@app.post("/analizza-dxf")
+async def analizza_dxf(
+    file: UploadFile = File(..., description="File .dxf"),
+    layer: str = "",
+    altezza: float = 2.7,
+):
+    """Riceve un DXF + il layer scelto e genera lo stesso output del .ply
+    (poligono, vista 3D, alzati, report), partendo dalla geometria CAD."""
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = WORK_DIR / job_id
+    job_dir.mkdir()
+    try:
+        dxf_data = await file.read()
+        dxf_path = job_dir / "input.dxf"
+        with open(dxf_path, "wb") as f:
+            f.write(dxf_data)
+
+        if not layer:
+            # Nessun layer scelto: prendi quello suggerito
+            layers = elenca_layer_dxf(str(dxf_path))
+            if not layers:
+                raise HTTPException(400, "DXF senza layer utilizzabili")
+            layer = layers[0]["nome"]
+
+        poligono = estrai_poligono_da_layer(str(dxf_path), layer)
+        if not poligono:
+            raise HTTPException(400, f"Nessun perimetro trovato nel layer '{layer}'")
+        poligono["altezza_m"] = altezza
+
+        # Salva il poligono per la PWA
+        with open(job_dir / "poligono.json", "w") as pf:
+            json.dump(poligono, pf)
+
+        bbox = poligono["bbox"]
+        return JSONResponse({
+            "job_id": job_id,
+            "poligono": poligono,
+            "larghezza": bbox[0],
+            "lunghezza": bbox[1],
+            "n_lati": poligono["n_lati"],
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Errore elaborazione DXF: {str(e)}")
+
+
 @app.post("/analizza")
 async def analizza(
     point_cloud: UploadFile = File(..., description="File .npy con array Nx3 punti 3D"),
@@ -2896,4 +3079,5 @@ if __name__ == "__main__":
     print("    POST /analizza → analisi dati reali")
     print("=" * 55)
     print()
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

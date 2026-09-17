@@ -2667,28 +2667,72 @@ def elenca_layer_dxf(path: str) -> list:
     return layers
 
 
-def _concatena_linee(linee, tol=0.05):
+def _concatena_linee(linee, tol=None):
+    """Concatena segmenti sparsi in una catena ordinata, cercando l'estremo piu vicino.
+    Estende sia in avanti che all'indietro. Tolleranza adattiva se non specificata."""
+    import numpy as np
     if not linee:
         return None
+    # Tolleranza adattiva: 2% della dimensione del disegno
+    if tol is None:
+        xs = [p[0] for l in linee for p in l]
+        ys = [p[1] for l in linee for p in l]
+        bbox = max(max(xs)-min(xs), max(ys)-min(ys))
+        tol = max(bbox * 0.02, 0.02)
     usate = [False] * len(linee)
     catena = list(linee[0]); usate[0] = True
+    # Estendi in avanti
     cambiato = True
     while cambiato:
         cambiato = False
+        fine = catena[-1]
+        best = -1; best_d = tol; flip = False
         for i, (a, b) in enumerate(linee):
             if usate[i]:
                 continue
-            fine = catena[-1]
-            if abs(fine[0]-a[0]) < tol and abs(fine[1]-a[1]) < tol:
-                catena.append(b); usate[i] = True; cambiato = True
-            elif abs(fine[0]-b[0]) < tol and abs(fine[1]-b[1]) < tol:
-                catena.append(a); usate[i] = True; cambiato = True
+            da = np.hypot(fine[0]-a[0], fine[1]-a[1])
+            db = np.hypot(fine[0]-b[0], fine[1]-b[1])
+            if da < best_d: best = i; best_d = da; flip = False
+            if db < best_d: best = i; best_d = db; flip = True
+        if best >= 0:
+            a, b = linee[best]
+            catena.append(a if flip else b)
+            usate[best] = True; cambiato = True
+    # Estendi all'indietro
+    cambiato = True
+    while cambiato:
+        cambiato = False
+        inizio = catena[0]
+        best = -1; best_d = tol; flip = False
+        for i, (a, b) in enumerate(linee):
+            if usate[i]:
+                continue
+            da = np.hypot(inizio[0]-a[0], inizio[1]-a[1])
+            db = np.hypot(inizio[0]-b[0], inizio[1]-b[1])
+            if da < best_d: best = i; best_d = da; flip = True
+            if db < best_d: best = i; best_d = db; flip = False
+        if best >= 0:
+            a, b = linee[best]
+            catena.insert(0, b if flip else a)
+            usate[best] = True; cambiato = True
     return catena
 
 
 def _costruisci_poligono_da_punti(pts, origine="dxf"):
     pts = np.array(pts, dtype=float)
-    if len(pts) > 1 and np.hypot(*(pts[0]-pts[-1])) < 0.05:
+    # RILEVA UNITA: se il disegno e' molto grande, e' in cm o mm, non metri
+    xs = pts[:, 0]; ys = pts[:, 1]
+    bbox = max(xs.max()-xs.min(), ys.max()-ys.min())
+    scala = 1.0
+    if bbox > 5000:       # oltre 5000 unita = millimetri (es. 8000mm = 8m)
+        scala = 0.001
+    elif bbox > 50:       # oltre 50 unita = centimetri (es. 900cm = 9m)
+        scala = 0.01
+    if scala != 1.0:
+        pts = pts * scala
+    # Tolleranza chiusura proporzionale
+    chiusura_tol = max(bbox * scala * 0.03, 0.05)
+    if len(pts) > 1 and np.hypot(*(pts[0]-pts[-1])) < chiusura_tol:
         pts = pts[:-1]
     if len(pts) < 3:
         return None

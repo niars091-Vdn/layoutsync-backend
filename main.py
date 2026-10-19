@@ -2651,19 +2651,24 @@ def elenca_layer_dxf(path: str) -> list:
         lay = e.dxf.layer
         t = e.dxftype()
         if lay not in conteggi:
-            conteggi[lay] = {"totale": 0, "linee": 0, "polilinee": 0}
+            conteggi[lay] = {"totale": 0, "linee": 0, "polilinee": 0, "punti": 0}
         conteggi[lay]["totale"] += 1
         if t == "LINE":
             conteggi[lay]["linee"] += 1
         elif t in ("LWPOLYLINE", "POLYLINE"):
             conteggi[lay]["polilinee"] += 1
+        elif t == "POINT":
+            conteggi[lay]["punti"] += 1
     layers = []
     for lay, c in conteggi.items():
+        e_nuvola = c["punti"] >= 50  # nuvola densa = migliore per ricostruire la stanza
         layers.append({
             "nome": lay, "entita": c["totale"],
-            "linee": c["linee"], "polilinee": c["polilinee"],
+            "linee": c["linee"], "polilinee": c["polilinee"], "punti": c["punti"],
+            "nuvola": e_nuvola,
         })
-    layers.sort(key=lambda x: (x["polilinee"], x["linee"]), reverse=True)
+    # Prima le nuvole di punti (ricostruzione automatica), poi polilinee, poi linee
+    layers.sort(key=lambda x: (x["punti"] if x["nuvola"] else 0, x["polilinee"], x["linee"]), reverse=True)
     return layers
 
 
@@ -2732,13 +2737,19 @@ def _costruisci_poligono_da_punti(pts, origine="dxf"):
         pts = pts * scala
     # Tolleranza chiusura proporzionale
     chiusura_tol = max(bbox * scala * 0.03, 0.05)
-    if len(pts) > 1 and np.hypot(*(pts[0]-pts[-1])) < chiusura_tol:
-        pts = pts[:-1]
-    if len(pts) < 3:
+    # Verifica se la catena SI CHIUDE (ultimo punto vicino al primo)
+    dist_chiusura = np.hypot(*(pts[0]-pts[-1])) if len(pts) > 1 else 999
+    e_chiuso = dist_chiusura < chiusura_tol
+    if e_chiuso:
+        pts = pts[:-1]  # rimuovi duplicato di chiusura
+    if len(pts) < 2:
         return None
     lati = []
     n = len(pts)
-    for i in range(n):
+    # Se il perimetro è chiuso, l'ultimo lato torna al primo punto (range n).
+    # Se è aperto (rilievo parziale), NON aggiungere il lato di chiusura (range n-1).
+    n_lati_da_fare = n if e_chiuso else n - 1
+    for i in range(n_lati_da_fare):
         a = pts[i]; b = pts[(i+1) % n]
         L = float(np.hypot(b[0]-a[0], b[1]-a[1]))
         if L < 0.05:
@@ -2765,14 +2776,99 @@ def _costruisci_poligono_da_punti(pts, origine="dxf"):
         "altezza_m": 2.7,
         "bbox": [round(float(xs.max()-xs.min()), 2), round(float(ys.max()-ys.min()), 2)],
         "origine": origine,
+        "chiuso": bool(e_chiuso),
     }
 
 
+def _contorno_da_nuvola(punti_mm):
+    """Estrae il contorno poligonale da una nuvola di PUNTI (come i layer Points
+    di TheMeter o un .ply). Occupancy grid + flood-fill + boundary tracing + RDP."""
+    from collections import deque
+    pts = np.array(punti_mm, dtype=float) / 1000.0  # mm -> m
+    if len(pts) < 20:
+        return None
+    res = 0.08
+    xmin, ymin = pts[:,0].min(), pts[:,1].min()
+    xmax, ymax = pts[:,0].max(), pts[:,1].max()
+    nx = int((xmax-xmin)/res)+1; ny = int((ymax-ymin)/res)+1
+    if nx < 5 or ny < 5 or nx > 1000 or ny > 1000:
+        return None
+    grid = np.zeros((nx, ny), dtype=bool)
+    for p in pts:
+        ix = int((p[0]-xmin)/res); iy = int((p[1]-ymin)/res)
+        if 0 <= ix < nx and 0 <= iy < ny: grid[ix, iy] = True
+    def dil(g, k):
+        o = g.copy()
+        for dx in range(-k,k+1):
+            for dy in range(-k,k+1): o |= np.roll(np.roll(g,dx,0),dy,1)
+        return o
+    def ero(g, k):
+        o = g.copy()
+        for dx in range(-k,k+1):
+            for dy in range(-k,k+1): o &= np.roll(np.roll(g,dx,0),dy,1)
+        return o
+    g = ero(dil(grid, 2), 2)
+    Hh, W = g.shape
+    outside = np.zeros_like(g); dq = deque()
+    for i in range(Hh):
+        for j in (0, W-1):
+            if not g[i,j] and not outside[i,j]: dq.append((i,j)); outside[i,j]=True
+    for j in range(W):
+        for i in (0, Hh-1):
+            if not g[i,j] and not outside[i,j]: dq.append((i,j)); outside[i,j]=True
+    while dq:
+        i,j = dq.popleft()
+        for di,dj in ((-1,0),(1,0),(0,-1),(0,1)):
+            ni,nj = i+di, j+dj
+            if 0<=ni<Hh and 0<=nj<W and not g[ni,nj] and not outside[ni,nj]:
+                outside[ni,nj]=True; dq.append((ni,nj))
+    occ = ~outside
+    start = None
+    for i in range(Hh):
+        for j in range(W):
+            if occ[i,j]: start=(i,j); break
+        if start: break
+    if start is None: return None
+    nb = [(-1,0),(-1,1),(0,1),(1,1),(1,0),(1,-1),(0,-1),(-1,-1)]
+    bnd = [start]; cur = start; b = 6; cnt = 0
+    while cnt < Hh*W*2:
+        cnt += 1; found = False
+        for k in range(8):
+            d = (b+1+k) % 8
+            ni,nj = cur[0]+nb[d][0], cur[1]+nb[d][1]
+            if 0<=ni<Hh and 0<=nj<W and occ[ni,nj]:
+                b=(d+4)%8; cur=(ni,nj); bnd.append(cur); found=True; break
+        if not found: break
+        if cur==start and len(bnd)>2: break
+    bnd = np.array(bnd, float)
+    bndm = np.column_stack([xmin+bnd[:,0]*res, ymin+bnd[:,1]*res])
+    # RDP
+    def rdp_iter(p, eps):
+        p = np.asarray(p, float); n = len(p)
+        if n < 3: return p
+        keep = np.zeros(n, bool); keep[0]=keep[-1]=True; stack=[(0,n-1)]
+        while stack:
+            i0,i1 = stack.pop(); a,bb = p[i0],p[i1]; ab=bb-a; abn=np.hypot(ab[0],ab[1])
+            dmax=0; idx=-1
+            for i in range(i0+1,i1):
+                dd = np.hypot(p[i][0]-a[0],p[i][1]-a[1]) if abn<1e-9 else abs(ab[0]*(a[1]-p[i][1])-ab[1]*(a[0]-p[i][0]))/abn
+                if dd>dmax: dmax=dd; idx=i
+            if dmax>eps and idx>0: keep[idx]=True; stack.append((i0,idx)); stack.append((idx,i1))
+        return p[keep]
+    poly = rdp_iter(bndm, 0.15)
+    if len(poly)>1 and np.hypot(*(poly[0]-poly[-1])) < 0.2:
+        poly = poly[:-1]
+    # Ritorna in mm per riusare _costruisci_poligono_da_punti (che rileva unità)
+    return (poly * 1000).tolist()
+
+
 def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
-    """Estrae il poligono perimetro dal layer DXF scelto dall'utente."""
+    """Estrae il poligono perimetro dal layer DXF scelto dall'utente.
+    Se il layer contiene molti PUNTI (nuvola di rilievo), ricostruisce il
+    contorno dai punti. Altrimenti usa polilinee o linee."""
     doc = ezdxf.readfile(path)
     msp = doc.modelspace()
-    polilinee = []; linee = []
+    polilinee = []; linee = []; punti = []
     for e in msp:
         if e.dxf.layer != layer_scelto:
             continue
@@ -2785,6 +2881,17 @@ def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
             polilinee.append(pts)
         elif t == "LINE":
             linee.append(((e.dxf.start[0], e.dxf.start[1]), (e.dxf.end[0], e.dxf.end[1])))
+        elif t == "POINT":
+            punti.append((e.dxf.location[0], e.dxf.location[1]))
+    # PRIORITA' 1: se c'e' una nuvola densa di punti, ricostruisci il contorno da quelli
+    # (piu' affidabile delle polilinee "Simplify" che TheMeter genera male)
+    if len(punti) >= 50:
+        contorno = _contorno_da_nuvola(punti)
+        if contorno:
+            risultato = _costruisci_poligono_da_punti(contorno)
+            if risultato:
+                risultato["chiuso"] = True  # il contorno da nuvola è sempre un anello chiuso
+            return risultato
     if polilinee:
         polilinee.sort(key=len, reverse=True)
         return _costruisci_poligono_da_punti(polilinee[0])

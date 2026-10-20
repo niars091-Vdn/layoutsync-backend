@@ -2889,6 +2889,40 @@ def _pulisci_e_raddrizza(poly):
         pp = np.asarray(pp, float)
         return (pp[:,0].max()-pp[:,0].min(), pp[:,1].max()-pp[:,1].min())
 
+    # ── 0) ANTI-SPUNTONE: togli i picchi (vertice che sporge e rientra) ──
+    # Un vertice è uno "spuntone" del rumore quando, rispetto alla corda che
+    # unisce i suoi due vicini, lo scostamento è piccolo (< 12cm) MA i due lati
+    # che vi convergono sono entrambi corti: è una punta aguzza che non cambia
+    # davvero il percorso della parete. Una nicchia vera ha scostamento grande
+    # (decine di cm) e quindi NON viene toccata.
+    def togli_spuntoni(src):
+        pts = [np.array(q, float) for q in src]
+        cambiato = True
+        while cambiato and len(pts) > 4:
+            cambiato = False
+            m = len(pts)
+            for i in range(m):
+                a = pts[(i-1) % m]; c = pts[i]; b = pts[(i+1) % m]
+                v1 = a - c; v2 = b - c
+                l1 = math.hypot(*v1); l2 = math.hypot(*v2)
+                if l1 < 1e-6 or l2 < 1e-6:
+                    del pts[i]; cambiato = True; break
+                cosA = max(-1, min(1, (v1[0]*v2[0]+v1[1]*v2[1])/(l1*l2)))
+                ang = math.degrees(math.acos(cosA))   # angolo al vertice c
+                lato_corto = min(l1, l2)
+                # distanza del picco dalla corda tra i due vicini (quanto sporge)
+                ab = b - a; Lab = math.hypot(*ab)
+                sporgenza = abs(ab[0]*(a[1]-c[1]) - ab[1]*(a[0]-c[0])) / Lab if Lab > 1e-6 else 0
+                # SPUNTONE = punta aguzza su lati corti: angolo acuto + lato corto.
+                # Non tocca una nicchia vera (lati lunghi) né un angolo retto di parete.
+                e_punta = (ang < 55 and lato_corto < 0.60)
+                # oppure: rientranza stretta e poco profonda (dente da rumore)
+                e_dente = (lato_corto < 0.35 and sporgenza < 0.30)
+                if e_punta or e_dente:
+                    del pts[i]; cambiato = True; break
+        return pts
+    senza_picchi = togli_spuntoni(P)
+
     # ── 1) FUSIONE lati quasi-collineari ──
     def fondi(src):
         pts = [np.array(q, float) for q in src]
@@ -2909,7 +2943,7 @@ def _pulisci_e_raddrizza(poly):
                 if ang > 168 or (ang > 150 and lato_corto < 0.40):
                     del pts[i]; cambiato = True; break
         return pts
-    fuso = fondi(P)
+    fuso = fondi(senza_picchi)
     if len(fuso) < 4:
         return np.array(fuso, float)
 

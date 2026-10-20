@@ -2855,11 +2855,106 @@ def _contorno_da_nuvola(punti_mm):
                 if dd>dmax: dmax=dd; idx=i
             if dmax>eps and idx>0: keep[idx]=True; stack.append((i0,idx)); stack.append((idx,i1))
         return p[keep]
-    poly = rdp_iter(bndm, 0.15)
+    poly = rdp_iter(bndm, 0.20)
     if len(poly)>1 and np.hypot(*(poly[0]-poly[-1])) < 0.2:
         poly = poly[:-1]
+    # ── PULIZIA + RADDRIZZA A MURI ──
+    poly = _pulisci_e_raddrizza(poly)
     # Ritorna in mm per riusare _costruisci_poligono_da_punti (che rileva unità)
     return (poly * 1000).tolist()
+
+
+def _pulisci_e_raddrizza(poly):
+    """Pulisce un contorno rumoroso e raddrizza le pareti, in due fasi:
+      1) FUSIONE (sempre sicura): elimina i vertici falsi (angolo quasi piatto)
+         nati dal rumore del laser, così una parete spezzata in micro-segmenti
+         torna un lato unico.
+      2) SNAP ANGOLARE (con rete di sicurezza): assegna a ogni lato una direzione
+         orizzontale/verticale della stanza SOLO se devia poco, poi ricostruisce
+         i vertici come intersezione dei lati. Se la ricostruzione degenera
+         (area o bbox crollano), viene scartata e si tiene il poligono solo fuso.
+    """
+    import math
+    P = np.asarray(poly, float)
+    if len(P) < 4:
+        return P
+
+    def area(pp):
+        s = 0.0; m = len(pp)
+        for i in range(m):
+            x1,y1 = pp[i]; x2,y2 = pp[(i+1)%m]
+            s += x1*y2 - x2*y1
+        return abs(s)/2.0
+    def bbox(pp):
+        pp = np.asarray(pp, float)
+        return (pp[:,0].max()-pp[:,0].min(), pp[:,1].max()-pp[:,1].min())
+
+    # ── 1) FUSIONE lati quasi-collineari ──
+    def fondi(src):
+        pts = [np.array(q, float) for q in src]
+        cambiato = True
+        while cambiato and len(pts) > 4:
+            cambiato = False
+            m = len(pts)
+            for i in range(m):
+                prev = pts[(i-1) % m]; cur = pts[i]; nxt = pts[(i+1) % m]
+                v1 = prev - cur; v2 = nxt - cur
+                l1 = math.hypot(*v1); l2 = math.hypot(*v2)
+                if l1 < 1e-6 or l2 < 1e-6:
+                    del pts[i]; cambiato = True; break
+                cosA = max(-1, min(1, (v1[0]*v2[0]+v1[1]*v2[1])/(l1*l2)))
+                ang = math.degrees(math.acos(cosA))
+                lato_corto = min(l1, l2)
+                # vertice falso: angolo quasi piatto, o gradino corto sul muro
+                if ang > 168 or (ang > 150 and lato_corto < 0.40):
+                    del pts[i]; cambiato = True; break
+        return pts
+    fuso = fondi(P)
+    if len(fuso) < 4:
+        return np.array(fuso, float)
+
+    area_fuso = area(fuso); bb_fuso = bbox(fuso)
+
+    # ── 2) SNAP ANGOLARE (tentativo) ──
+    m = len(fuso)
+    best_len, best_ang = -1.0, 0.0
+    for i in range(m):
+        d = fuso[(i+1)%m] - fuso[i]; L = math.hypot(*d)
+        if L > best_len: best_len = L; best_ang = math.atan2(d[1], d[0])
+    base = best_ang
+
+    dirs = []        # versore target di ogni lato
+    for i in range(m):
+        d = fuso[(i+1)%m] - fuso[i]; L = math.hypot(*d)
+        if L < 0.3:
+            dirs.append(d / (L or 1.0)); continue
+        ang = math.atan2(d[1], d[0])
+        rel = (ang - base) % (math.pi/2)
+        dev = min(rel, math.pi/2 - rel)
+        if math.degrees(dev) < 10.0:
+            target = base if rel < math.pi/4 else base + math.pi/2
+            dirs.append(np.array([math.cos(target), math.sin(target)]))
+        else:
+            dirs.append(d / L)   # fuori squadro reale: tieni la direzione vera
+    bases_pt = [ (fuso[i] + fuso[(i+1)%m]) / 2 for i in range(m) ]
+
+    rec = []; ok = True
+    for i in range(m):
+        p1, d1 = bases_pt[(i-1)%m], dirs[(i-1)%m]
+        p2, d2 = bases_pt[i], dirs[i]
+        den = d1[0]*(-d2[1]) - d1[1]*(-d2[0])
+        if abs(den) < 1e-6:
+            ok = False; break
+        dx = p2[0]-p1[0]; dy = p2[1]-p1[1]
+        t = (dx*(-d2[1]) - dy*(-d2[0])) / den
+        rec.append(np.array([p1[0]+t*d1[0], p1[1]+t*d1[1]]))
+
+    if ok and len(rec) == m:
+        a2 = area(rec); bb2 = bbox(rec)
+        if (area_fuso*0.6 < a2 < area_fuso*1.4
+                and bb2[0] > bb_fuso[0]*0.5 and bb2[1] > bb_fuso[1]*0.5):
+            return np.array(rec, float)   # snap accettato
+    return np.array(fuso, float)          # snap scartato: tieni il fuso
 
 
 def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:

@@ -2994,10 +2994,91 @@ def _pulisci_e_raddrizza(poly):
     return np.array(fuso, float)          # snap scartato: tieni il fuso
 
 
+def _segmenti_simplify(msp, layer):
+    """Estrae tutti i segmenti (coppie di punti) dalle polilinee e linee di un
+    layer Simplify di TheMeter, in millimetri."""
+    import numpy as np
+    segs = []
+    for e in msp:
+        if e.dxf.layer != layer:
+            continue
+        t = e.dxftype()
+        if t == "LWPOLYLINE":
+            p = [(pt[0], pt[1]) for pt in e.get_points()]
+            for i in range(len(p)-1):
+                segs.append((np.array(p[i], float), np.array(p[i+1], float)))
+        elif t == "POLYLINE":
+            p = [(v.dxf.location[0], v.dxf.location[1]) for v in e.vertices]
+            for i in range(len(p)-1):
+                segs.append((np.array(p[i], float), np.array(p[i+1], float)))
+        elif t == "LINE":
+            segs.append((np.array([e.dxf.start[0], e.dxf.start[1]], float),
+                         np.array([e.dxf.end[0], e.dxf.end[1]], float)))
+    return segs
+
+
+def _contorno_da_segmenti(segs, min_len=150, gap_max=1500):
+    """Unisce i segmenti LUNGHI di TheMeter in un perimetro chiuso, come l'unione
+    manuale in ZWCAD: parte dal segmento più lungo e aggancia via via il capo più
+    vicino, colmando i buchi (aperture) fino a gap_max. Ritorna punti in mm."""
+    import numpy as np, math
+    segs = [s for s in segs if math.hypot(*(s[1]-s[0])) >= min_len]
+    if len(segs) < 3:
+        return None
+    usati = [False]*len(segs)
+    start = max(range(len(segs)), key=lambda i: math.hypot(*(segs[i][1]-segs[i][0])))
+    usati[start] = True
+    catena = [segs[start][0].copy(), segs[start][1].copy()]
+    for _ in range(len(segs)):
+        coda = catena[-1]; best=None; bestd=1e9; bestrev=False
+        for i, s in enumerate(segs):
+            if usati[i]:
+                continue
+            d0 = math.hypot(*(s[0]-coda)); d1 = math.hypot(*(s[1]-coda))
+            if d0 < bestd: bestd=d0; best=i; bestrev=False
+            if d1 < bestd: bestd=d1; best=i; bestrev=True
+        if best is None or bestd > gap_max:
+            break
+        usati[best] = True
+        s = segs[best]
+        p1 = s[0] if bestrev else s[1]
+        catena.append(p1.copy())
+    if len(catena) < 3:
+        return None
+    # chiudi l'anello: se coda e testa sono vicine, rimuovi il duplicato
+    if math.hypot(*(catena[-1]-catena[0])) < 300:
+        catena = catena[:-1]
+    return _fusione_soft(np.array(catena))
+
+
+def _fusione_soft(poly):
+    """Fusione leggera per i segmenti GIÀ puliti di TheMeter: elimina solo i
+    vertici quasi-piatti (parete dritta spezzata) e i micro-gradini cortissimi,
+    conservando gli angoli e le rientranze reali. Ritorna np.array."""
+    import numpy as np, math
+    pts = [np.array(q, float) for q in poly]
+    cambiato = True
+    while cambiato and len(pts) > 4:
+        cambiato = False
+        m = len(pts)
+        for i in range(m):
+            a = pts[(i-1) % m]; c = pts[i]; b = pts[(i+1) % m]
+            v1 = a-c; v2 = b-c; l1 = math.hypot(*v1); l2 = math.hypot(*v2)
+            if l1 < 1e-6 or l2 < 1e-6:
+                del pts[i]; cambiato=True; break
+            cosA = max(-1, min(1, (v1[0]*v2[0]+v1[1]*v2[1])/(l1*l2)))
+            ang = math.degrees(math.acos(cosA))
+            # millimetri: micro-gradino < 200mm
+            if ang > 168 or (ang > 155 and min(l1, l2) < 200):
+                del pts[i]; cambiato=True; break
+    return np.array(pts)
+
+
 def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
     """Estrae il poligono perimetro dal layer DXF scelto dall'utente.
-    Se il layer contiene molti PUNTI (nuvola di rilievo), ricostruisce il
-    contorno dai punti. Altrimenti usa polilinee o linee."""
+    PRIORITÀ: se il DXF contiene i layer 'Simplify' di TheMeter (pareti già
+    semplificate), unisce quei segmenti in un perimetro (come in ZWCAD).
+    Altrimenti ricostruisce il contorno dalla nuvola di punti grezzi."""
     doc = ezdxf.readfile(path)
     msp = doc.modelspace()
     polilinee = []; linee = []; punti = []
@@ -3015,8 +3096,30 @@ def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
             linee.append(((e.dxf.start[0], e.dxf.start[1]), (e.dxf.end[0], e.dxf.end[1])))
         elif t == "POINT":
             punti.append((e.dxf.location[0], e.dxf.location[1]))
-    # PRIORITA' 1: se c'e' una nuvola densa di punti, ricostruisci il contorno da quelli
-    # (piu' affidabile delle polilinee "Simplify" che TheMeter genera male)
+    # PRIORITA' 1: segmenti già semplificati da TheMeter (layer Simplify).
+    # È l'equivalente automatico dell'unione manuale dei segmenti in ZWCAD:
+    # molto più fedele della ricostruzione dalla nuvola grezza, perché TheMeter
+    # ha già tolto il rumore. Preferisco l'Hard (il più pulito), poi Medium.
+    nomi_layer = {e.dxf.layer for e in msp}
+    layer_simplify = None
+    for cand in sorted(nomi_layer):
+        cl = cand.lower()
+        if "simplify" in cl and "hard" in cl:
+            layer_simplify = cand; break
+    if layer_simplify is None:
+        for cand in sorted(nomi_layer):
+            if "simplify" in cand.lower() and "medium" in cand.lower():
+                layer_simplify = cand; break
+    if layer_simplify:
+        segs = _segmenti_simplify(msp, layer_simplify)
+        contorno = _contorno_da_segmenti(segs)
+        if contorno is not None and len(contorno) >= 3:
+            risultato = _costruisci_poligono_da_punti(contorno.tolist())
+            if risultato:
+                risultato["chiuso"] = True
+                return risultato
+
+    # PRIORITA' 2: ricostruzione dalla nuvola di punti grezzi (fallback)
     if len(punti) >= 50:
         contorno = _contorno_da_nuvola(punti)
         if contorno:

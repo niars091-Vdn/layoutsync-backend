@@ -2914,11 +2914,14 @@ def _pulisci_e_raddrizza(poly):
                 ab = b - a; Lab = math.hypot(*ab)
                 sporgenza = abs(ab[0]*(a[1]-c[1]) - ab[1]*(a[0]-c[0])) / Lab if Lab > 1e-6 else 0
                 # SPUNTONE = punta aguzza su lati corti: angolo acuto + lato corto.
-                # Non tocca una nicchia vera (lati lunghi) né un angolo retto di parete.
-                e_punta = (ang < 55 and lato_corto < 0.60)
-                # oppure: rientranza stretta e poco profonda (dente da rumore)
-                e_dente = (lato_corto < 0.35 and sporgenza < 0.30)
-                if e_punta or e_dente:
+                e_punta = (ang < 55 and lato_corto < 0.80)
+                # DENTE: rientranza stretta e poco profonda (rumore sul muro)
+                e_dente = (lato_corto < 0.40 and sporgenza < 0.35)
+                # CUSPIDE: una "V" molto aguzza è sempre rumore — una nicchia vera
+                # non è una punta, ha un fondo piatto. Rimuovila anche se profonda,
+                # purché almeno un lato non sia una parete intera (< 1.2m).
+                e_cuspide = (ang < 40 and lato_corto < 1.20)
+                if e_punta or e_dente or e_cuspide:
                     del pts[i]; cambiato = True; break
         return pts
     senza_picchi = togli_spuntoni(P)

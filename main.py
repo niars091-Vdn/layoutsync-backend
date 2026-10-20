@@ -14,6 +14,10 @@ import os, sys, json, math, shutil, zipfile, io, time, uuid, struct
 from pathlib import Path
 from typing import Optional
 
+# Build del backend: cambia a ogni modifica. Visibile su /status per capire
+# subito se Render ha caricato il codice nuovo.
+BUILD = "2026.10.20.2255"
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -3158,7 +3162,8 @@ def root():
 
 @app.get("/status")
 def status():
-    return {"status": "ok", "servizio": "LayoutSync API", "versione": "1.0.0"}
+    return {"status": "ok", "servizio": "LayoutSync API",
+            "versione": "1.0.0", "build": BUILD}
 
 @app.get("/demo")
 def demo():
@@ -3452,7 +3457,7 @@ if __name__ == "__main__":
     import uvicorn
     print()
     print("=" * 55)
-    print("  LayoutSync API — Blocco 4")
+    print("  LayoutSync API — Blocco 4  ·  build " + BUILD)
     print("=" * 55)
     print("  Server:  http://localhost:8000")
     print("  Docs:    http://localhost:8000/docs")

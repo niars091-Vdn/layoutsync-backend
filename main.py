@@ -16,7 +16,7 @@ from typing import Optional
 
 # Build del backend: cambia a ogni modifica. Visibile su /status per capire
 # subito se Render ha caricato il codice nuovo.
-BUILD = "2026.10.20.2255"
+BUILD = "2026.10.20.2305"
 
 import numpy as np
 import matplotlib
@@ -3072,8 +3072,10 @@ def _fusione_soft(poly):
                 del pts[i]; cambiato=True; break
             cosA = max(-1, min(1, (v1[0]*v2[0]+v1[1]*v2[1])/(l1*l2)))
             ang = math.degrees(math.acos(cosA))
-            # millimetri: micro-gradino < 200mm
-            if ang > 168 or (ang > 155 and min(l1, l2) < 200):
+            # quasi-piatto, oppure vertice ottuso d'aggancio su lato cortissimo
+            # (<300mm): spariscono i mezzi-gradini spuri tra due segmenti ma
+            # resta il gradino REALE (che ha almeno un lato > ~35cm).
+            if ang > 168 or (ang > 150 and min(l1, l2) < 300):
                 del pts[i]; cambiato=True; break
     return np.array(pts)
 

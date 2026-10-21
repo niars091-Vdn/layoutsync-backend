@@ -16,7 +16,7 @@ from typing import Optional
 
 # Build del backend: cambia a ogni modifica. Visibile su /status per capire
 # subito se Render ha caricato il codice nuovo.
-BUILD = "2026.10.21.1100"
+BUILD = "2026.10.21.1145"
 
 import numpy as np
 import matplotlib
@@ -3112,6 +3112,51 @@ def _fondi_per_direzione(pts, tol_deg=22):
     return pts
 
 
+def _filtra_outlier(pts):
+    """Scarta i punti isolati lontanissimi dalla massa (spazzatura del rilievo),
+    che altrimenti gonfiano il bounding box. pts: np.array Nx2."""
+    import numpy as np
+    if len(pts) < 10:
+        return pts
+    c = np.median(pts, axis=0)
+    d = np.hypot(pts[:,0]-c[0], pts[:,1]-c[1])
+    med = np.median(d); mad = np.median(np.abs(d-med)) + 1e-9
+    keep = d < med + 3.5*1.4826*mad*3
+    return pts[keep] if keep.sum() >= 3 else pts
+
+
+def _contorno_da_punti_ordinati(pts_mm):
+    """Per i layer tipo 'AccuratePoints': i punti sono GIÀ nell'ordine del
+    percorso di scansione (come li unisce TheMeter). Li collega in sequenza,
+    chiude l'anello (primo-ultimo), e semplifica con RDP + fusione per direzione.
+    pts_mm: lista di [x,y] in mm. Ritorna lista di punti in mm."""
+    import numpy as np, math
+    pts = _filtra_outlier(np.array(pts_mm, float))
+    if len(pts) < 4:
+        return None
+    # RDP: riduce la catena densa ai vertici veri (tolleranza 80mm)
+    def rdp(p, eps):
+        p = np.asarray(p, float); n = len(p)
+        if n < 3: return p
+        keep = np.zeros(n, bool); keep[0]=keep[-1]=True; st=[(0,n-1)]
+        while st:
+            i0,i1 = st.pop(); a,b = p[i0],p[i1]; ab=b-a; abn=np.hypot(ab[0],ab[1])
+            dmax=0; idx=-1
+            for i in range(i0+1,i1):
+                dd = np.hypot(p[i][0]-a[0],p[i][1]-a[1]) if abn<1e-9 else abs(ab[0]*(a[1]-p[i][1])-ab[1]*(a[0]-p[i][0]))/abn
+                if dd>dmax: dmax=dd; idx=i
+            if dmax>eps and idx>0: keep[idx]=True; st.append((i0,idx)); st.append((idx,i1))
+        return p[keep]
+    poly = rdp(pts, 80)
+    if len(poly) < 3:
+        return None
+    # togli eventuale duplicato di chiusura, poi fondi i tratti co-direzionali
+    if np.hypot(*(poly[-1]-poly[0])) < 100:
+        poly = poly[:-1]
+    poly = _fondi_per_direzione([np.array(p, float) for p in poly], tol_deg=22)
+    return [p.tolist() for p in poly]
+
+
 def _contorno_da_linee_wall(msp, layer="Wall"):
     """Per i rilievi TheMeter SENZA layer Simplify (pareti sul layer 'Wall').
     Usa i POINT nell'ordine del file (sono già la sequenza dei vertici del
@@ -3220,7 +3265,21 @@ def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
                 risultato["chiuso"] = True
                 return risultato
 
-    # PRIORITA' 3: ricostruzione dalla nuvola di punti grezzi (fallback)
+    # PRIORITA' 3: layer 'AccuratePoints' — punti GIÀ in ordine di scansione.
+    # Li collega in sequenza e chiude l'anello (come fa il programma TheMeter).
+    layer_acc = next((n for n in nomi_layer if "accuratepoints" in n.lower()), None)
+    if layer_acc:
+        punti_acc = [(e.dxf.location[0], e.dxf.location[1])
+                     for e in msp if e.dxf.layer == layer_acc and e.dxftype() == "POINT"]
+        if len(punti_acc) >= 10:
+            contorno = _contorno_da_punti_ordinati(punti_acc)
+            if contorno is not None and len(contorno) >= 3:
+                risultato = _costruisci_poligono_da_punti(contorno, unita=unita)
+                if risultato:
+                    risultato["chiuso"] = True
+                    return risultato
+
+    # PRIORITA' 4: ricostruzione dalla nuvola di punti grezzi (fallback)
     if len(punti) >= 50:
         contorno = _contorno_da_nuvola(punti)
         if contorno:

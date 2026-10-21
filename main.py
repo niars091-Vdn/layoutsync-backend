@@ -16,7 +16,7 @@ from typing import Optional
 
 # Build del backend: cambia a ogni modifica. Visibile su /status per capire
 # subito se Render ha caricato il codice nuovo.
-BUILD = "2026.10.21.1145"
+BUILD = "2026.10.21.1155"
 
 import numpy as np
 import matplotlib
@@ -2769,9 +2769,9 @@ def _costruisci_poligono_da_punti(pts, origine="dxf", unita="auto"):
             continue
         ang = float(np.degrees(np.arctan2(b[1]-a[1], b[0]-a[0])))
         lati.append({
-            "da": [round(float(a[0]), 3), round(float(a[1]), 3)],
-            "a": [round(float(b[0]), 3), round(float(b[1]), 3)],
-            "lunghezza_m": round(L, 2),
+            "da": [round(float(a[0]), 4), round(float(a[1]), 4)],
+            "a": [round(float(b[0]), 4), round(float(b[1]), 4)],
+            "lunghezza_m": round(L, 3),
             "direzione_gradi": round(ang, 1),
         })
     for i in range(len(lati)):
@@ -2783,7 +2783,7 @@ def _costruisci_poligono_da_punti(pts, origine="dxf", unita="auto"):
         lati[i]["angolo_fine"] = interno
     xs = pts[:, 0]; ys = pts[:, 1]
     return {
-        "vertici": [[round(float(p[0]), 3), round(float(p[1]), 3)] for p in pts],
+        "vertici": [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in pts],
         "lati": lati,
         "n_lati": len(lati),
         "altezza_m": 2.7,

@@ -16,7 +16,7 @@ from typing import Optional
 
 # Build del backend: cambia a ogni modifica. Visibile su /status per capire
 # subito se Render ha caricato il codice nuovo.
-BUILD = "2026.10.20.2305"
+BUILD = "2026.10.21.1045"
 
 import numpy as np
 import matplotlib
@@ -2727,16 +2727,25 @@ def _concatena_linee(linee, tol=None):
     return catena
 
 
-def _costruisci_poligono_da_punti(pts, origine="dxf"):
+def _costruisci_poligono_da_punti(pts, origine="dxf", unita="auto"):
     pts = np.array(pts, dtype=float)
-    # RILEVA UNITA: se il disegno e' molto grande, e' in cm o mm, non metri
     xs = pts[:, 0]; ys = pts[:, 1]
     bbox = max(xs.max()-xs.min(), ys.max()-ys.min())
-    scala = 1.0
-    if bbox > 5000:       # oltre 5000 unita = millimetri (es. 8000mm = 8m)
+    # UNITA: se note (es. DXF con $INSUNITS=mm), usa quelle; altrimenti indovina
+    # dalla dimensione. L'auto-rilevamento sbaglia sulle stanze piccole in mm
+    # (4500mm < 5000 verrebbe scambiato per cm), quindi un'unità esplicita vince.
+    if unita == "mm":
         scala = 0.001
-    elif bbox > 50:       # oltre 50 unita = centimetri (es. 900cm = 9m)
+    elif unita == "cm":
         scala = 0.01
+    elif unita == "m":
+        scala = 1.0
+    else:  # auto
+        scala = 1.0
+        if bbox > 5000:       # oltre 5000 unita = millimetri (es. 8000mm = 8m)
+            scala = 0.001
+        elif bbox > 50:       # oltre 50 unita = centimetri (es. 900cm = 9m)
+            scala = 0.01
     if scala != 1.0:
         pts = pts * scala
     # Tolleranza chiusura proporzionale
@@ -3080,13 +3089,64 @@ def _fusione_soft(poly):
     return np.array(pts)
 
 
+def _contorno_da_linee_wall(msp, layer="Wall"):
+    """Per i rilievi TheMeter SENZA layer Simplify (hanno le pareti come LINE
+    sul layer 'Wall'): concatena le linee in una catena per prossimità e chiude
+    l'anello. È il caso delle stanze a L dove il laser traccia le pareti ma non
+    chiude il perimetro: la parete mancante viene chiusa unendo capo e coda,
+    come l'unione manuale in ZWCAD. Ritorna punti in mm (lista)."""
+    import numpy as np, math
+    segs = []
+    for e in msp:
+        if e.dxf.layer != layer:
+            continue
+        if e.dxftype() == "LINE":
+            a = np.array([e.dxf.start[0], e.dxf.start[1]], float)
+            b = np.array([e.dxf.end[0], e.dxf.end[1]], float)
+            if math.hypot(*(b-a)) > 1:
+                segs.append((a, b))
+    if len(segs) < 3:
+        return None
+    usati = [False]*len(segs)
+    usati[0] = True
+    catena = [segs[0][0].copy(), segs[0][1].copy()]
+    for _ in range(len(segs)):
+        coda = catena[-1]; best=None; bd=1e9; rev=False
+        for i, s in enumerate(segs):
+            if usati[i]:
+                continue
+            d0 = math.hypot(*(s[0]-coda)); d1 = math.hypot(*(s[1]-coda))
+            if d0 < bd: bd=d0; best=i; rev=False
+            if d1 < bd: bd=d1; best=i; rev=True
+        if best is None or bd > 2000:   # gap massimo 2m tra un tratto e l'altro
+            break
+        usati[best] = True
+        s = segs[best]
+        catena.append((s[0] if rev else s[1]).copy())
+    if len(catena) < 3:
+        return None
+    poly = np.array(catena)
+    # se capo e coda quasi coincidono, togli il duplicato (già chiuso)
+    if math.hypot(*(poly[-1]-poly[0])) < 100:
+        poly = poly[:-1]
+    # fusione leggera: i segmenti sono già puliti, togli solo i vertici falsi
+    poly = _fusione_soft(poly)
+    return poly.tolist()
+
+
 def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
     """Estrae il poligono perimetro dal layer DXF scelto dall'utente.
-    PRIORITÀ: se il DXF contiene i layer 'Simplify' di TheMeter (pareti già
-    semplificate), unisce quei segmenti in un perimetro (come in ZWCAD).
-    Altrimenti ricostruisce il contorno dalla nuvola di punti grezzi."""
+    PRIORITÀ: 1) layer 'Simplify' di TheMeter; 2) layer 'Wall' (LINE); 3) nuvola
+    di punti grezzi. Automatizza l'unione manuale dei segmenti che si fa in ZWCAD."""
     doc = ezdxf.readfile(path)
     msp = doc.modelspace()
+    # Unità del disegno da $INSUNITS (4=mm, 5=cm, 6=m). TheMeter esporta in mm.
+    unita = "auto"
+    try:
+        iu = doc.header.get("$INSUNITS", 0)
+        unita = {4: "mm", 5: "cm", 6: "m"}.get(iu, "auto")
+    except Exception:
+        unita = "auto"
     polilinee = []; linee = []; punti = []
     for e in msp:
         if e.dxf.layer != layer_scelto:
@@ -3125,7 +3185,18 @@ def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
                 risultato["chiuso"] = True
                 return risultato
 
-    # PRIORITA' 2: ricostruzione dalla nuvola di punti grezzi (fallback)
+    # PRIORITA' 2: layer 'Wall' con le pareti come LINE (rilievi senza Simplify).
+    # Concatena le linee e chiude l'anello (stanze a L / perimetri aperti).
+    if any("wall" == n.lower() for n in nomi_layer):
+        nome_wall = next(n for n in nomi_layer if n.lower() == "wall")
+        contorno = _contorno_da_linee_wall(msp, nome_wall)
+        if contorno is not None and len(contorno) >= 3:
+            risultato = _costruisci_poligono_da_punti(contorno, unita=unita)
+            if risultato:
+                risultato["chiuso"] = True
+                return risultato
+
+    # PRIORITA' 3: ricostruzione dalla nuvola di punti grezzi (fallback)
     if len(punti) >= 50:
         contorno = _contorno_da_nuvola(punti)
         if contorno:

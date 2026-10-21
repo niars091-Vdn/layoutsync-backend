@@ -16,7 +16,7 @@ from typing import Optional
 
 # Build del backend: cambia a ogni modifica. Visibile su /status per capire
 # subito se Render ha caricato il codice nuovo.
-BUILD = "2026.10.21.1045"
+BUILD = "2026.10.21.1100"
 
 import numpy as np
 import matplotlib
@@ -3089,49 +3089,73 @@ def _fusione_soft(poly):
     return np.array(pts)
 
 
+def _fondi_per_direzione(pts, tol_deg=22):
+    """Fonde i lati consecutivi che hanno quasi la stessa direzione: una parete
+    letta dal laser a piccoli tratti (es. 4 segmenti a ~7°) torna UNA parete
+    dritta. Così le lunghezze sommate corrispondono alle quote reali del rilievo.
+    Non tocca gli spigoli veri (cambio di direzione netto). pts: lista np.array."""
+    import math
+    pts = [p.copy() for p in pts]
+    cambiato = True
+    while cambiato and len(pts) > 3:
+        cambiato = False
+        m = len(pts)
+        for i in range(1, m-1):   # catena aperta: non toccare i due estremi
+            d1 = pts[i] - pts[i-1]; d2 = pts[i+1] - pts[i]
+            if math.hypot(*d1) < 1 or math.hypot(*d2) < 1:
+                del pts[i]; cambiato = True; break
+            a1 = math.degrees(math.atan2(d1[1], d1[0]))
+            a2 = math.degrees(math.atan2(d2[1], d2[0]))
+            diff = abs((a2 - a1 + 180) % 360 - 180)
+            if diff < tol_deg:
+                del pts[i]; cambiato = True; break
+    return pts
+
+
 def _contorno_da_linee_wall(msp, layer="Wall"):
-    """Per i rilievi TheMeter SENZA layer Simplify (hanno le pareti come LINE
-    sul layer 'Wall'): concatena le linee in una catena per prossimità e chiude
-    l'anello. È il caso delle stanze a L dove il laser traccia le pareti ma non
-    chiude il perimetro: la parete mancante viene chiusa unendo capo e coda,
-    come l'unione manuale in ZWCAD. Ritorna punti in mm (lista)."""
+    """Per i rilievi TheMeter SENZA layer Simplify (pareti sul layer 'Wall').
+    Usa i POINT nell'ordine del file (sono già la sequenza dei vertici del
+    rilievo), fonde i tratti quasi-allineati in pareti dritte e chiude l'anello
+    (la parete non scansionata viene chiusa unendo capo e coda, come in ZWCAD).
+    Ritorna punti in mm (lista)."""
     import numpy as np, math
-    segs = []
+    pts = []
     for e in msp:
-        if e.dxf.layer != layer:
-            continue
-        if e.dxftype() == "LINE":
-            a = np.array([e.dxf.start[0], e.dxf.start[1]], float)
-            b = np.array([e.dxf.end[0], e.dxf.end[1]], float)
-            if math.hypot(*(b-a)) > 1:
-                segs.append((a, b))
-    if len(segs) < 3:
+        if e.dxf.layer == layer and e.dxftype() == "POINT":
+            p = np.array([e.dxf.location[0], e.dxf.location[1]], float)
+            if not pts or math.hypot(*(p - pts[-1])) > 1:
+                pts.append(p)
+    # fallback: se non ci sono POINT, concatena le LINE per prossimità
+    if len(pts) < 3:
+        segs = []
+        for e in msp:
+            if e.dxf.layer == layer and e.dxftype() == "LINE":
+                a = np.array([e.dxf.start[0], e.dxf.start[1]], float)
+                b = np.array([e.dxf.end[0], e.dxf.end[1]], float)
+                if math.hypot(*(b-a)) > 1:
+                    segs.append((a, b))
+        if len(segs) < 3:
+            return None
+        usati = [False]*len(segs); usati[0] = True
+        pts = [segs[0][0].copy(), segs[0][1].copy()]
+        for _ in range(len(segs)):
+            coda = pts[-1]; best=None; bd=1e9; rev=False
+            for i, s in enumerate(segs):
+                if usati[i]: continue
+                d0 = math.hypot(*(s[0]-coda)); d1 = math.hypot(*(s[1]-coda))
+                if d0 < bd: bd=d0; best=i; rev=False
+                if d1 < bd: bd=d1; best=i; rev=True
+            if best is None or bd > 2000: break
+            usati[best] = True; s = segs[best]
+            pts.append((s[0] if rev else s[1]).copy())
+    if len(pts) < 3:
         return None
-    usati = [False]*len(segs)
-    usati[0] = True
-    catena = [segs[0][0].copy(), segs[0][1].copy()]
-    for _ in range(len(segs)):
-        coda = catena[-1]; best=None; bd=1e9; rev=False
-        for i, s in enumerate(segs):
-            if usati[i]:
-                continue
-            d0 = math.hypot(*(s[0]-coda)); d1 = math.hypot(*(s[1]-coda))
-            if d0 < bd: bd=d0; best=i; rev=False
-            if d1 < bd: bd=d1; best=i; rev=True
-        if best is None or bd > 2000:   # gap massimo 2m tra un tratto e l'altro
-            break
-        usati[best] = True
-        s = segs[best]
-        catena.append((s[0] if rev else s[1]).copy())
-    if len(catena) < 3:
-        return None
-    poly = np.array(catena)
-    # se capo e coda quasi coincidono, togli il duplicato (già chiuso)
-    if math.hypot(*(poly[-1]-poly[0])) < 100:
-        poly = poly[:-1]
-    # fusione leggera: i segmenti sono già puliti, togli solo i vertici falsi
-    poly = _fusione_soft(poly)
-    return poly.tolist()
+    # togli duplicato di chiusura se capo e coda coincidono
+    if math.hypot(*(pts[-1] - pts[0])) < 100:
+        pts = pts[:-1]
+    # FUSIONE PER DIREZIONE: unisce i micro-tratti di una stessa parete
+    pts = _fondi_per_direzione(pts, tol_deg=22)
+    return [p.tolist() for p in pts]
 
 
 def estrai_poligono_da_layer(path: str, layer_scelto: str) -> dict:
